@@ -1,32 +1,23 @@
 # mpu_generators/mixing.py
-r"""
-Ways to combine two independently-certified MPU chains into one
-([PDF-B] Part IV). Operates on ``(tensors, l_vec, r_vec)`` triples in this
-package's own convention, ``tensors`` a list (one tensor per site, use
-``[A]*N`` for a uniform single-tensor result from ``uniform.py``).
+r"""Combine independently certified MPU chains into a new certified chain.
 
-- :func:`stack`: operator composition, bond dim ``D1*D2``, no extra site --
-  trivially unitary (product of two unitaries), no certification needed
-  beyond the inputs' own.
-- :func:`nest`: a thin alias for
-  :meth:`mpu_generators.uniform.UniformMPUGenerator.invariant_subspace` --
-  [PDF-B] frames it as a distinct "mixing mode" even though it is the same
-  construction as the rank-$k$ invariant subspace mechanism.
-- :func:`capped_sum`: [PDF-B] §4.4, one extra site whose row is itself an
-  (RR) pair $\Pi_1,\Pi_2$ (reusing
-  :func:`mpu_generators.base._row_resolution_blocks` -- this is *exactly*
-  Mode I's own row-resolution recipe, applied to two whole sub-chains
-  instead of single branches, per the source doc's own framing), giving
-  $U_{N+1}=\Pi_1\otimes U_N^{(1)}+\Pi_2\otimes U_N^{(2)}$ -- provably
-  unitary for *any* two independently-certified inputs
-  ($\Pi_1^\dagger\Pi_1+\Pi_2^\dagger\Pi_2=1$, $\Pi_1^\dagger\Pi_2=0$ makes
-  the cross terms vanish exactly, mirroring Theorem 1's own proof).
+All functions take and return ``(tensors, l_vec, r_vec)`` triples in the
+package convention (``tensors`` is a list; use ``[A] * N`` for a single
+translation-invariant tensor).
 
-**Deliberately not implemented**: naive summing without the extra site
-($l=l_1+l_2$, no $\Pi$) -- [PDF-B] §4.3 shows this fails in general (no
-reason for $U^{(1)\dagger}U^{(2)}$ cross terms to cancel); a regression test
-demonstrating the failure lives in ``tests/``, not a function here.
+* :func:`stack` -- operator product :math:`U^{(1)}_N U^{(2)}_N`
+  (tensor-first sampling paper, composition remark);
+* :func:`capped_sum` -- one extra site carrying an (RR) pair,
+  :math:`\Pi_1\otimes U^{(1)}_N+\Pi_2\otimes U^{(2)}_N` (thesis
+  ``cor:mode1-readout`` applied to two chains);
+* :func:`nest` -- alias of
+  :meth:`~mpu_generators.uniform.UniformMPUGenerator.invariant_subspace`.
+
+The naive sum :math:`\ell=\ell_1\oplus\ell_2` without the extra site is
+not unitary in general (the cross terms :math:`U^{(1)\dagger}U^{(2)}` do not
+cancel); the test suite contains this negative control.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -35,12 +26,22 @@ from .base import _row_resolution_blocks
 
 
 def stack(mpu1, mpu2, seed: int | None = None):
-    r"""
-    Operator composition ([PDF-B] §4.1): $U_N := U_N^{(1)} \cdot U_N^{(2)}$,
-    bond dimension $D_1 D_2$, no extra site. Requires equal physical
-    dimension $d$ and equal chain length $N$ for both inputs. ``seed`` is
-    accepted for interface symmetry with the other mixing functions but is
-    unused (this construction has no randomness of its own).
+    r"""Operator product of two chains, :math:`U_N = U_N^{(1)}\,U_N^{(2)}`.
+
+    Site tensors compose as operators (``mpu2`` acts first) and bond
+    dimensions multiply, :math:`\chi=\chi_1\chi_2`; boundaries are Kronecker
+    products. The result is unitary because both factors are.
+
+    Parameters
+    ----------
+    mpu1, mpu2 : tuple
+        ``(tensors, l_vec, r_vec)`` with equal length and physical dimension.
+    seed : int, optional
+        Unused (deterministic); kept for a uniform interface.
+
+    Returns
+    -------
+    tensors, l_vec, r_vec
     """
     tensors1, l1, r1 = mpu1
     tensors2, l2, r2 = mpu2
@@ -48,7 +49,9 @@ def stack(mpu1, mpu2, seed: int | None = None):
         raise ValueError("stack requires equal-length chains.")
     d = tensors1[0].shape[0]
     if tensors2[0].shape[0] != d:
-        raise ValueError(f"stack requires equal physical dimension d (got {d} and {tensors2[0].shape[0]}).")
+        raise ValueError(
+            f"stack requires equal physical dimension d (got {d} and {tensors2[0].shape[0]})."
+        )
 
     tensors = []
     for A1, A2 in zip(tensors1, tensors2):
@@ -64,13 +67,22 @@ def stack(mpu1, mpu2, seed: int | None = None):
 
 
 def nest(sub_A, sub_l, sub_r, D_extra: int = 2, seed: int | None = None, generator=None):
-    r"""
-    Thin alias for
-    :meth:`mpu_generators.uniform.UniformMPUGenerator.invariant_subspace`,
-    exposed under [PDF-B]'s own "mixing" name -- same construction, not a
-    separate implementation. ``generator`` may be an existing
-    ``UniformMPUGenerator`` instance (its ``seed``/``verify`` are then
-    reused); a fresh one is created otherwise.
+    r"""Alias of :meth:`~mpu_generators.uniform.UniformMPUGenerator.invariant_subspace`.
+
+    Parameters
+    ----------
+    sub_A, sub_l, sub_r : ndarray
+        Translation-invariant MPU to embed.
+    D_extra : int
+        Additional bond dimension.
+    seed : int, optional
+        Seed for the embedding.
+    generator : UniformMPUGenerator, optional
+        Existing generator to use (a new one is created otherwise).
+
+    Returns
+    -------
+    A, l_vec, r_vec : ndarray
     """
     from .uniform import UniformMPUGenerator
 
@@ -79,16 +91,33 @@ def nest(sub_A, sub_l, sub_r, D_extra: int = 2, seed: int | None = None, generat
 
 
 def capped_sum(mpu1, mpu2, seed: int | None = None):
-    r"""
-    Capped sum ([PDF-B] §4.4): one extra site prepended, carrying an (RR)
-    pair $\Pi_1,\Pi_2$ (built via
-    :func:`mpu_generators.base._row_resolution_blocks` on 2 targets --
-    literally Mode I's own row-resolution recipe), giving
-    $U_{N+1}=\Pi_1\otimes U_N^{(1)}+\Pi_2\otimes U_N^{(2)}$, unitary for
-    *any* two independently-certified inputs. Requires equal physical
-    dimension $d$ (this implementation's scope choice -- see module
-    docstring) and equal chain length $N$ for both inputs; bond dimensions
-    may differ freely.
+    r"""Capped sum: :math:`U_{N+1}=\Pi_1\otimes U_N^{(1)}+\Pi_2\otimes U_N^{(2)}`.
+
+    A readout site is prepended whose row is an (RR) pair
+    (:func:`~mpu_generators.base._row_resolution_blocks` with two targets),
+    followed by the block-diagonal direct sum of the two chains. The
+    identities :math:`\Pi_1^\dagger\Pi_1+\Pi_2^\dagger\Pi_2=1`,
+    :math:`\Pi_1^\dagger\Pi_2=0` cancel the cross terms, so the result is
+    unitary for any two unitary inputs.
+
+    Parameters
+    ----------
+    mpu1, mpu2 : tuple
+        ``(tensors, l_vec, r_vec)`` with equal length and physical dimension
+        (bond dimensions may differ).
+    seed : int, optional
+        Seed for the Haar draws of the readout row (default 0).
+
+    Returns
+    -------
+    tensors, l_vec, r_vec
+        ``N + 1`` tensors, ``l_vec = (1)``.
+
+    Notes
+    -----
+    The readout blocks are stored without the transpose used elsewhere, so the
+    site applies :math:`\Pi_i^\top`; the pair :math:`\{\Pi_i^\top\}` satisfies
+    (RR) as well (by the mirror identities), so unitarity is unaffected.
     """
     tensors1, l1, r1 = mpu1
     tensors2, l2, r2 = mpu2
