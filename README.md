@@ -5,7 +5,7 @@
 [![arXiv](https://img.shields.io/badge/arXiv-2508.08160-b31b1b.svg)](https://arxiv.org/abs/2508.08160)
 
 Certified random generators for Matrix Product Unitaries (MPUs): sample
-tensors that are **provably** unitary for every chain length $N$ under a
+tensors that are unitary for every chain length $N$ under a
 single fixed generative rule, rather than approximately unitary or
 unitary only on average. Every construction confines the relevant
 transfer object to an $N$-independent algebraic family *by design*: an
@@ -14,8 +14,8 @@ length — nothing here relies on statistical typicality, large-$N$
 concentration, or rejection sampling.
 
 **Documentation:** [user guide](docs/userguide.md) ·
-[tutorial notebooks](../notebooks/) (02, 03, 06) ·
-[theory → code map](../docs/theory_code_map.md)
+[tutorial notebooks](https://github.com/Mrcocvs02/TreeMPU/tree/main/notebooks) (02, 03, 06) ·
+[theory → code map](https://github.com/Mrcocvs02/TreeMPU/blob/main/docs/theory_code_map.md)
 
 Two classes, sharing one construction:
 
@@ -79,10 +79,13 @@ Two classes, sharing one construction:
 
 ## Background
 
-"Certified" here means something specific: for every mechanism, unitarity
-is guaranteed by an *algebraic condition on the site tensor itself*,
-proved once and checked directly on every draw — not inferred from
-spot-checking a few chain lengths and hoping it generalizes.
+"Certified" here means something specific: for Modes I and II and the
+grafted composition, unitarity is guaranteed by an *algebraic condition on
+the site tensor itself*, proved once and checked directly on every draw —
+not inferred from spot-checking a few chain lengths. Mode II-B (Lee–Yang)
+is the exception: only the intertwiner condition is checked, and global
+unitarity is verified numerically (dense for $d^N \le 2^{10}$,
+normalization beyond).
 
 - **Row Resolution (RR)**, Mode I: each row of the branching tensor must
   satisfy completeness ($\sum_u A_u^\dagger A_u = \mathbb{1}$) and
@@ -120,11 +123,11 @@ $U^\dagger U = \mathbb 1$. Either failure raises `RuntimeError`.
 TreeMPU is not on PyPI, so install it first:
 
 ```bash
-pip install "TreeMPU @ git+https://github.com/Mrcocvs02/MPU_Decomposition.git"
+pip install "TreeMPU @ git+https://github.com/Mrcocvs02/TreeMPU.git"
 pip install git+https://github.com/Mrcocvs02/MPU_Generation.git
 ```
 
-This package imports from [`TreeMPU`](https://github.com/Mrcocvs02/MPU_Decomposition)
+This package imports from [`TreeMPU`](https://github.com/Mrcocvs02/TreeMPU)
 (blocking, boundary sweeps, dense reference), never the reverse.
 
 For local development inside the parent monorepo (where this directory
@@ -167,7 +170,7 @@ assert all((tensors[0] == A).all() for A in tensors[1:])
 ```
 
 Both snippets produce a `(tensors, l_vec, r_vec)` triple ready to hand to
-[`TreeMPU.UniformMPU`/`GeneralMPU`](../README.md#usage-guide) for circuit
+[`TreeMPU.UniformMPU`/`GeneralMPU`](https://github.com/Mrcocvs02/TreeMPU/blob/main/README.md#usage-guide) for circuit
 synthesis.
 
 ## API overview
@@ -304,7 +307,7 @@ construction (gated by `verify=True`, the default):
   itself.
 - Mode II-B — `verify_intertwiner`: direct residual of the intertwiner
   condition (null-complement and boundary-compatibility conditions of the
-  thesis are not checked; see the gap report).
+  thesis are not checked).
 
 On top of that, every assembled chain goes through the numerical
 safeguards described in [Background](#background) (normalization, and the
@@ -330,7 +333,7 @@ tensors, l, r = gen.fusion_bond_resolved(sk, n_blocks=2, blocking=1)
 ## Relationship to TreeMPU
 
 This package imports from
-[`TreeMPU`](https://github.com/Mrcocvs02/MPU_Decomposition):
+[`TreeMPU`](https://github.com/Mrcocvs02/TreeMPU):
 
 - `TreeMPU.utils.block_mpu_tensors` — coarse-grains consecutive site
   tensors for the `blocking`/`blocking="auto"` parameters above.
@@ -401,7 +404,7 @@ Matrix-Product Unitaries" (in preparation). It builds on:
 ## Status
 
 Alpha (0.2.0). Used as a submodule of
-[`TreeMPU`](https://github.com/Mrcocvs02/MPU_Decomposition). All
+[`TreeMPU`](https://github.com/Mrcocvs02/TreeMPU). All
 mechanisms listed above are implemented and covered by the test suite.
 
 ## License

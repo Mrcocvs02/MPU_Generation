@@ -94,5 +94,5 @@ tensors, l_vec, r_vec = build_family("fusion_nested_flag", d=2, bond_dim=2, seed
 * Group convolution is implemented for abelian groups and $S_3$ (the paper
   treats every finite group).
 
-See the tutorials in `../../notebooks/` (02, 03, 06) and the theory-to-code
-map in `../../docs/theory_code_map.md`.
+See the [tutorials](https://github.com/Mrcocvs02/TreeMPU/tree/main/notebooks) (02, 03, 06) and the
+[theory-to-code map](https://github.com/Mrcocvs02/TreeMPU/blob/main/docs/theory_code_map.md) in the TreeMPU repository.
