@@ -43,11 +43,12 @@ Two classes, sharing one construction:
 
 ## Key features
 
-- **Mode I — `branching`** (row resolution): a random digraph on the
-  bond dimension whose rows are filled by Haar-dressed, rank-balanced
-  orthogonal blocks; completeness holds for *any* Haar draw, no rejection
-  needed. Supports combined multi-vertex readout via an auxiliary
-  cascade of sites.
+- **Mode I — `branching`** (row resolution): a digraph on the bond
+  dimension whose rows are filled by Haar-dressed orthogonal blocks;
+  completeness holds for *any* Haar draw, no rejection needed. The digraph
+  and the rank partition are random and balanced by default, or
+  hand-picked / random (`digraph`, `out_degree`, `ranks`). Supports
+  combined multi-vertex readout via an auxiliary cascade of sites.
 - **Mode II — `fusion`** (fusion closure): a bond-diagonal tensor whose
   channel matrices close under a fixed fusion rule. Four built-in
   skeletons — `cyclic` ($\mathbb{Z}_M$ characters), `nested_flag`
@@ -90,8 +91,8 @@ normalization beyond).
 - **Row Resolution (RR)**, Mode I: each row of the branching tensor must
   satisfy completeness ($\sum_u A_u^\dagger A_u = \mathbb{1}$) and
   cross-orthogonality between branches. The construction draws two Haar
-  unitaries and builds each block from rank-balanced orthogonal
-  projectors, which makes (RR) hold identically for any Haar draw —
+  unitaries and builds each block from orthogonal projectors (any rank
+  partition), which makes (RR) hold identically for any Haar draw —
   there is nothing to reject.
 - **Fusion Closure (FC)**, Mode II: the channel matrices $y_u$ of a
   bond-diagonal tensor must close under
@@ -194,7 +195,14 @@ Every generation method — on either class — returns
 tensor per site, convention `A[p_in, p_out, bond_L, bond_R]`), plus the
 left/right boundary vectors closing the chain.
 
-### `MPUGenerator(seed=0, verify=True)`
+### `MPUGenerator(seed=0, verify=True, coherent_in_n=True)`
+
+With `coherent_in_n=True` (default) the generator is seeded with `seed`
+alone: one random family for every chain length (the uniform site tensor
+does not depend on `n_sites`, and resampled chains of different lengths
+share their draws; the tensor-first sampling paper relies on this). With
+`coherent_in_n=False` every chain length gets an independent draw, seeded
+with `(seed, n_sites)`.
 
 Every mode below takes **exactly one** of `n_sites` (raw physical chain
 length) or `n_blocks` (number of final coarse-grained tensors), plus a
@@ -203,7 +211,7 @@ factor satisfying Assumption 1, capped by `max_blocking`).
 
 | Method | Mode | Key parameters / constraints |
 |---|---|---|
-| `branching(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, readout=None)` | I | `readout`: list of vertices for combined multi-vertex readout, any auxiliary dimension |
+| `branching(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, readout=None, digraph=None, out_degree=None, ranks="balanced")` | I | `readout`: list of vertices for combined multi-vertex readout, any auxiliary dimension; `digraph`: hand-picked `{v: [targets]}` (1 to `d` distinct targets per vertex, used at every site); `out_degree`: int or `"random"` (uniform in `1..min(d, bond_dim)` per vertex); `ranks`: `"balanced"`, `"random"` (uniform composition of `d`) or hand-picked `{v: [ranks]}` (needs `digraph`). Non-default choices are different ensembles on the same certified class. |
 | `fusion(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, skeleton="cyclic", group="Zn", group_n=3)` | II | `skeleton in {"cyclic","nested_flag","matrix_units","group"}`; `cyclic` needs `bond_dim <= d`; `matrix_units` needs `bond_dim = 1 + m**2` for integer `m` (2, 5, 10, 17, 26, ...); `group` needs `d = bond_dim = |G|`, `group in {"Zn","Zn_product","S3"}` |
 | `fusion_bond_resolved(skeleton, n_sites=None, n_blocks=None, blocking=1, max_blocking=8)` | II-B | `skeleton`: a pre-built `FusionSkeleton` (e.g. from `mpu_generators.skeletons.lee_yang_skeleton()`) |
 | `grafted(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8)` | I + II | requires even `bond_dim` (`= 2 * n_channels`) |

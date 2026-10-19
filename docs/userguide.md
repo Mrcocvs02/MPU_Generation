@@ -30,7 +30,13 @@ a digraph; each row satisfies
 $\sum_u A[v,u]^\dagger A[v,u]=\mathbb 1$, $A[v,u]^\dagger A[v,u']=0$
 ($u\ne u'$) and the mirror identities. With $\ell=e_0$, $r=(1,\dots,1)$ the
 chain is unitary for every $N$. Sampler: $A[v,u_i]=VP_iW^\dagger$ with Haar
-$V,W$ and $P_i$ projectors on balanced column blocks of $W$.
+$V,W$ and $P_i$ projectors on consecutive column blocks of $W$. By default
+the digraph is random with out-degree $\min(d,\chi)$ and the block sizes
+(ranks) are balanced; `digraph=`, `out_degree="random"` and
+`ranks="random"` or `ranks={v: [...]}` select other ensembles on the same
+certified class (the certificate holds for every rank partition).
+`MPUGenerator(coherent_in_n=False)` draws an independent family for every
+chain length instead of one family for all $N$.
 
 **Mode II — fusion closure** (`fusion`). $A[a,b]=\delta_{ab}y_a$, so
 $U_N=\sum_u\ell_u y_u^{\otimes N}$. Unitarity for every $N$ follows from

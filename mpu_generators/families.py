@@ -53,6 +53,8 @@ def build_family(
     bond_dim: int = 2,
     seed: int = 0,
     n_sites: int | None = None,
+    coherent_in_n: bool = True,
+    **options,
 ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
     """Build one instance of a named family.
 
@@ -70,6 +72,11 @@ def build_family(
     n_sites : int, optional
         Number of physical sites. If omitted, a two-tensor chain is built
         (``n_blocks=2``).
+    coherent_in_n : bool
+        Passed to the generator (see :class:`~mpu_generators.base.MPUGenerator`).
+    **options
+        Extra keyword arguments of the underlying generator method, e.g.
+        ``digraph``, ``out_degree``, ``ranks`` for the Mode I families.
 
     Returns
     -------
@@ -96,12 +103,13 @@ def build_family(
     if name not in FAMILIES:
         raise KeyError(f"unknown family {name!r}; choose from {sorted(FAMILIES)}")
     size = {"n_sites": n_sites} if n_sites else {"n_blocks": 2}
-    U = UniformMPUGenerator(seed=seed)
+    U = UniformMPUGenerator(seed=seed, coherent_in_n=coherent_in_n)
+    size.update(options)
 
     if name == "branching_uniform":
         return U.branching(d=d, bond_dim=bond_dim, blocking="auto", max_blocking=2, **size)
     if name == "branching_general":
-        return MPUGenerator(seed=seed).branching(
+        return MPUGenerator(seed=seed, coherent_in_n=coherent_in_n).branching(
             d=d, bond_dim=bond_dim, blocking="auto", max_blocking=2, **size
         )
     if name == "grafted":

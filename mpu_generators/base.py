@@ -73,7 +73,7 @@ def _haar_unitary(dim: int, rng: np.random.Generator) -> np.ndarray:
 
 
 def _row_resolution_blocks(
-    d: int, targets: list[int], rng: np.random.Generator
+    d: int, targets: list[int], rng: np.random.Generator, ranks: list[int] | None = None
 ) -> dict[int, np.ndarray]:
     r"""Sample one row of a Mode I tensor obeying row resolution (RR).
 
@@ -87,9 +87,10 @@ def _row_resolution_blocks(
 
     Recipe: draw :math:`V, W` Haar in :math:`U(d)`, let :math:`P_i` be the
     orthogonal projector onto the :math:`i`-th consecutive block of columns
-    of :math:`W` (block sizes as equal as possible, so the rank partition is
-    balanced), and set :math:`A[v,u_i] = V P_i W^\dagger`. Both halves of (RR)
-    hold for every draw; no rejection is needed.
+    of :math:`W` (block sizes ``ranks``; by default as equal as possible, so
+    the rank partition is balanced), and set :math:`A[v,u_i] = V P_i W^\dagger`.
+    Both halves of (RR) hold for every draw and every rank partition; no
+    rejection is needed.
 
     Parameters
     ----------
@@ -99,6 +100,9 @@ def _row_resolution_blocks(
         Target vertices :math:`u_i` of the outgoing edges of this row.
     rng : numpy.random.Generator
         Consumes two Haar draws (:math:`V` then :math:`W`).
+    ranks : list of int, optional
+        Rank of each block, positive and summing to ``d`` (one per target).
+        Default: the balanced partition.
 
     Returns
     -------
@@ -117,8 +121,11 @@ def _row_resolution_blocks(
     m = len(targets)
     if not 1 <= m <= d:
         raise ValueError(f"A row needs 1 <= out-degree <= d outgoing edges; got {m} with d={d}.")
-    base, rem = divmod(d, m)
-    ranks = [base + (1 if i < rem else 0) for i in range(m)]
+    if ranks is None:
+        base, rem = divmod(d, m)
+        ranks = [base + (1 if i < rem else 0) for i in range(m)]
+    elif len(ranks) != m or any(int(k) < 1 for k in ranks) or sum(ranks) != d:
+        raise ValueError(f"ranks {list(ranks)} must be {m} positive integers summing to d={d}.")
 
     V = _haar_unitary(d, rng)
     W = _haar_unitary(d, rng)
@@ -175,6 +182,7 @@ def _mode1_site_tensor(
     d: int,
     rng: np.random.Generator,
     identity_rows: tuple[int, ...] = (),
+    ranks: str | dict[int, list[int]] = "balanced",
 ) -> np.ndarray:
     r"""Build one Mode I site tensor ``A[p_in, p_out, bond_L, bond_R]``.
 
@@ -191,6 +199,11 @@ def _mode1_site_tensor(
         Consumed row by row, in the iteration order of ``edges``.
     identity_rows : tuple of int
         Vertices whose row is a single identity self-loop (no randomness).
+    ranks : "balanced", "random" or dict
+        Rank partition of every row: balanced (default), a uniformly random
+        composition of ``d`` into ``len(edges[v])`` positive parts (drawn
+        from ``rng`` just before the row's Haar unitaries), or explicit
+        ``{v: [rank of edge to edges[v][0], ...]}``.
 
     Returns
     -------
@@ -207,22 +220,82 @@ def _mode1_site_tensor(
                 raise ValueError(f"identity_rows entry {v} must carry exactly one self-loop.")
             A[:, :, v, v] = np.eye(d, dtype=complex)
             continue
-        for u, block in _row_resolution_blocks(d, targets, rng).items():
+        if ranks == "balanced":
+            row_ranks = None
+        elif ranks == "random":
+            row_ranks = _random_composition(d, len(targets), rng)
+        elif isinstance(ranks, dict):
+            row_ranks = list(ranks[v])
+        else:
+            raise ValueError(f"ranks must be 'balanced', 'random' or a dict; got {ranks!r}.")
+        for u, block in _row_resolution_blocks(d, targets, rng, row_ranks).items():
             A[:, :, v, u] = block.T
     return A
 
 
+def _random_composition(n: int, k: int, rng: np.random.Generator) -> list[int]:
+    """Uniformly random composition of ``n`` into ``k`` positive parts (stars and bars)."""
+    cuts = np.sort(rng.choice(np.arange(1, n), size=k - 1, replace=False)) if k > 1 else []
+    edges = [0, *(int(c) for c in cuts), n]
+    return [edges[i + 1] - edges[i] for i in range(k)]
+
+
+def _check_digraph(edges: dict[int, list[int]], D: int, d: int) -> dict[int, list[int]]:
+    """Validate a user-supplied Mode I digraph and return a normalized copy.
+
+    Every vertex ``0..D-1`` needs between 1 and ``d`` distinct targets in
+    ``0..D-1``: a row with no outgoing edge would break the telescoping in the
+    unitarity proof, and (RR) resolves at most ``d`` orthogonal branches.
+    Parallel edges are not allowed (two projectors on the same tensor entry
+    would add up to a single, non-projective block).
+    """
+    if sorted(edges) != list(range(D)):
+        raise ValueError(f"digraph must have exactly the vertices 0..{D - 1}; got {sorted(edges)}.")
+    out = {}
+    for v in range(D):
+        t = [int(u) for u in edges[v]]
+        if not 1 <= len(t) <= d:
+            raise ValueError(f"vertex {v} has out-degree {len(t)}; need 1 <= out-degree <= d={d}.")
+        if len(set(t)) != len(t) or any(not 0 <= u < D for u in t):
+            raise ValueError(f"vertex {v}: targets {t} must be distinct vertices in 0..{D - 1}.")
+        out[v] = t
+    return out
+
+
+def _check_ranks(ranks: dict[int, list[int]], edges: dict[int, list[int]], d: int) -> None:
+    """Validate an explicit rank partition against its digraph."""
+    for v, targets in edges.items():
+        if v not in ranks:
+            raise ValueError(f"ranks has no entry for vertex {v}.")
+        r = [int(k) for k in ranks[v]]
+        if len(r) != len(targets) or any(k < 1 for k in r) or sum(r) != d:
+            raise ValueError(
+                f"ranks[{v}] = {r} must be {len(targets)} positive integers summing to d={d}."
+            )
+
+
 def _random_out_regular_digraph(
-    D: int, d: int, rng: np.random.Generator, out_degree: int | None = None
+    D: int, d: int, rng: np.random.Generator, out_degree: int | str | None = None
 ) -> dict[int, list[int]]:
-    """Random out-regular digraph on ``D`` vertices.
+    """Random digraph on ``D`` vertices for Mode I.
 
     Every vertex gets ``m = min(out_degree or d, d, D)`` distinct targets,
-    chosen uniformly without replacement (self-loops allowed). The cap at
-    ``d`` is forced by (RR): a row resolves at most ``d`` mutually orthogonal
-    branches. Cycles are allowed; the Mode I certificate needs no acyclicity.
+    chosen uniformly without replacement (self-loops allowed). With
+    ``out_degree="random"`` each vertex first draws its own ``m`` uniformly
+    in ``1..min(d, D)``. The cap at ``d`` is forced by (RR): a row resolves
+    at most ``d`` mutually orthogonal branches. Cycles are allowed; the
+    Mode I certificate needs no acyclicity.
     """
-    m = min(d, D) if out_degree is None else min(out_degree, d, D)
+    cap = min(d, D)
+    if out_degree == "random":
+        out = {}
+        for v in range(D):
+            m = int(rng.integers(1, cap + 1))
+            out[v] = sorted(int(t) for t in rng.choice(D, size=m, replace=False))
+        return out
+    m = cap if out_degree is None else min(int(out_degree), cap)
+    if m < 1:
+        raise ValueError(f"out_degree must be >= 1, got {out_degree}.")
     return {v: sorted(int(t) for t in rng.choice(D, size=m, replace=False)) for v in range(D)}
 
 
@@ -1032,12 +1105,18 @@ class MPUGenerator:
     seed : int
         Seed of the ``numpy.random.default_rng`` created at every call.
         Calling the same method twice with the same arguments returns the
-        same MPU, and for uniform generators the site tensor does not depend
-        on ``n_sites`` (the ensembles of the tensor-first sampling paper rely
-        on this).
+        same MPU.
     verify : bool
         Run the algebraic checks at construction time, plus the numerical
         safeguards of :func:`_finalize_chain` on the assembled chain.
+    coherent_in_n : bool
+        ``True`` (default): one random family for all chain lengths. The
+        generator is seeded with ``seed`` alone, so for uniform generators the
+        site tensor does not depend on ``n_sites``, and resampled chains of
+        different lengths share their draws (the ensembles of the tensor-first
+        sampling paper rely on this). ``False``: an independent draw for every
+        chain length, seeded with ``(seed, n_sites)`` (``n_sites`` counts
+        physical sites before blocking).
 
     Notes
     -----
@@ -1054,9 +1133,16 @@ class MPUGenerator:
     #: it at every site (translation invariance).
     _resample: bool = True
 
-    def __init__(self, seed: int = 0, verify: bool = True):
+    def __init__(self, seed: int = 0, verify: bool = True, coherent_in_n: bool = True):
         self.seed = seed
         self.verify = verify
+        self.coherent_in_n = coherent_in_n
+
+    def _rng(self, n_sites_total: int) -> np.random.Generator:
+        """Generator for one chain of ``n_sites_total`` physical sites."""
+        if self.coherent_in_n:
+            return np.random.default_rng(self.seed)
+        return np.random.default_rng([self.seed, n_sites_total])
 
     def _sites(self, make_site, n_sites: int, rng: np.random.Generator) -> list[np.ndarray]:
         if self._resample:
@@ -1106,7 +1192,7 @@ class MPUGenerator:
                     f"n_sites={sites_L} with blocking={L} leaves "
                     f"{sites_L // L} tensor(s); need at least 2."
                 )
-            rng = np.random.default_rng(self.seed)
+            rng = self._rng(sites_L)
             sites, l_vec, r_vec = build_sites(sites_L, rng)
             return _finalize_chain(sites, l_vec, r_vec, L, self.verify)
 
@@ -1125,12 +1211,15 @@ class MPUGenerator:
         blocking: int | str = 1,
         max_blocking: int = 8,
         readout: list[int] | None = None,
+        digraph: dict[int, list[int]] | None = None,
+        out_degree: int | str | None = None,
+        ranks: str | dict[int, list[int]] = "balanced",
     ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
-        r"""Mode I (row resolution): a random digraph with Haar-resolved rows.
+        r"""Mode I (row resolution): a digraph with Haar-resolved rows.
 
-        The virtual bond indexes the ``bond_dim`` vertices of a random
-        out-regular digraph (out-degree ``min(d, bond_dim)``, balanced rank
-        partition); every row of every site satisfies (RR)
+        The virtual bond indexes the ``bond_dim`` vertices of a digraph (by
+        default random and out-regular, out-degree ``min(d, bond_dim)``, with
+        a balanced rank partition); every row of every site satisfies (RR)
         (:func:`_row_resolution_blocks`). With single-vertex readout
         :math:`\ell=e_0`, :math:`r=(1,\dots,1)` the chain is unitary for every
         :math:`N` (thesis ``thm:mode1-unitarity``; paper ``thm:main1``).
@@ -1154,6 +1243,26 @@ class MPUGenerator:
             :math:`m=\max(1,\lceil\log_d D_{\rm aux}\rceil)` extra sites, a
             :math:`d`-ary tree of (RR) rows that resolves every listed vertex
             exactly (:func:`_combined_readout_sites`); then :math:`\ell=(1)`.
+        digraph : dict, optional
+            Hand-picked digraph ``{v: [targets]}`` on the vertices
+            ``0..bond_dim-1``, used at every site; each vertex needs between 1
+            and ``d`` distinct targets. Default: random (see ``out_degree``),
+            redrawn at every site in the resampled (site-dependent) case.
+        out_degree : int or "random", optional
+            Out-degree of the random digraph: fixed (capped at
+            ``min(d, bond_dim)``, the default), or ``"random"``, drawn
+            uniformly in ``1..min(d, bond_dim)`` for every vertex.
+            Ignored when ``digraph`` is given.
+        ranks : "balanced", "random" or dict
+            Rank partition of every row: as equal as possible (default), a
+            uniformly random composition of ``d`` into positive parts (drawn
+            per row and per site), or hand-picked ``{v: [ranks]}``, one
+            positive rank per target of ``v`` in the order of the digraph's
+            target list, summing to ``d`` (requires ``digraph``).
+
+        Every choice is certified by the same theorem; the non-default
+        options define *different ensembles* on the certified class, so
+        statistics are not comparable with the default one.
 
         Returns
         -------
@@ -1163,14 +1272,25 @@ class MPUGenerator:
             Boundary vectors.
         """
 
+        if digraph is not None:
+            digraph = _check_digraph(digraph, bond_dim, d)
+        if isinstance(ranks, dict):
+            if digraph is None:
+                raise ValueError("explicit ranks need an explicit digraph.")
+            _check_ranks(ranks, digraph, d)
+
         def build_sites(n_sites_total: int, rng: np.random.Generator):
-            edges = _random_out_regular_digraph(bond_dim, d, rng)
+            if digraph is None:
+                edges = _random_out_regular_digraph(bond_dim, d, rng, out_degree)
 
             def make_site(r: np.random.Generator) -> np.ndarray:
-                site_edges = (
-                    edges if not self._resample else _random_out_regular_digraph(bond_dim, d, r)
-                )
-                return _mode1_site_tensor(bond_dim, site_edges, d, r)
+                if digraph is not None:
+                    site_edges = digraph
+                elif self._resample:
+                    site_edges = _random_out_regular_digraph(bond_dim, d, r, out_degree)
+                else:
+                    site_edges = edges
+                return _mode1_site_tensor(bond_dim, site_edges, d, r, ranks=ranks)
 
             sites = self._sites(make_site, n_sites_total, rng)
 
@@ -1436,7 +1556,7 @@ class MPUGenerator:
                     f"n_sites={sites_L} with blocking={L} leaves "
                     f"{sites_L // L} tensor(s); need at least 2."
                 )
-            rng = np.random.default_rng(self.seed)
+            rng = self._rng(sites_L)
             sites = self._sites(lambda r: skeleton.dress(r), sites_L, rng)
             tensors = block_mpu_tensors(sites, L)
             l_vec, r_vec = skeleton.l_vec.copy(), skeleton.r_vec.copy()
