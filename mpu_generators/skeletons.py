@@ -27,11 +27,16 @@ The thesis certificate for a bond-resolved skeleton has three parts:
 :math:`(\operatorname{im} V)^\perp`, and (iii) boundary compatibility
 :math:`\mu_{\sigma\sigma}=V(\mu_a\oplus\mu_\sigma)`,
 :math:`\lambda_{\sigma\sigma}^\dagger V=(\lambda_a\oplus\lambda_\sigma)^\dagger`.
-This module implements (i) only. The Lee-Yang skeleton is built from
-explicit core tensors and boundary data (thesis, Lee-Yang example); its
-global unitarity is checked numerically by the generator
-(``verify=True``), not derived from (i)-(iii) here. Mode II-B is outside
-the scope of the tensor-first sampling paper.
+:func:`solve_intertwiner` and :func:`verify_intertwiner` are standalone
+helpers for (i); nothing in the package calls them at generation time, and
+(ii) and (iii) are not checked anywhere. :func:`lee_yang_skeleton` builds
+explicit core tensors and boundary data (thesis, Lee-Yang example). No
+algebraic certificate is therefore checked when a Mode II-B chain is
+generated: its unitarity is validated numerically only, by the normalization
+check for any :math:`N` and, for :math:`d^N\le 2^{10}`, the dense check
+:math:`\|U^\dagger U-1\|_F\le 10^{-8}\sqrt{d^N}` (both with
+``verify=True``). Mode II-B is outside the scope of the tensor-first sampling
+paper.
 """
 
 from __future__ import annotations
@@ -54,7 +59,7 @@ class FusionSkeleton:
     trace-to-open-boundary step :math:`\operatorname{Tr}(\cdot)\to\ell^\top(\cdot)r`
     with the identity boundary on the :math:`k_u`-dimensional factor.
 
-    Attributes
+    Parameters
     ----------
     d : int
         Local physical dimension.
@@ -69,6 +74,11 @@ class FusionSkeleton:
         Channel name -> slice of the full bond space (width ``k_u * chi_u``).
     l_vec, r_vec : ndarray
         Boundary vectors of length ``bond_dim``.
+
+    Attributes
+    ----------
+    d, bond_dim, channels, multiplicities, bond_slices, l_vec, r_vec
+        Stored unchanged under the names of the constructor parameters.
     """
 
     d: int
@@ -118,6 +128,18 @@ def _dress_core_tensor(B: np.ndarray, W: np.ndarray) -> np.ndarray:
     With ``B[p_in, p_out, a, b]`` the operator at bond entry ``(a, b)`` is
     :math:`M_{ab}[p_{out},p_{in}]=B[p_{in},p_{out},a,b]`; it becomes
     :math:`W M_{ab} W^\dagger`.
+
+    Parameters
+    ----------
+    B : ndarray
+        Core tensor, shape ``(d, d, chi, chi)`` in the package convention.
+    W : ndarray
+        Unitary of shape ``(d, d)``.
+
+    Returns
+    -------
+    ndarray
+        Dressed core tensor, same shape as ``B``.
     """
     M = np.moveaxis(B, 0, 1)  # (p_out, p_in, a, b)
     M2 = np.einsum("ik,klab,jl->ijab", W, M, W.conj())
@@ -150,7 +172,18 @@ def mpo_product_tensor(B_u: np.ndarray, B_v: np.ndarray) -> np.ndarray:
 
 
 def _direct_sum(summands: list[np.ndarray]) -> np.ndarray:
-    """Block-diagonal direct sum of core tensors on the bond legs."""
+    """Return the block-diagonal direct sum of core tensors on the bond legs.
+
+    Parameters
+    ----------
+    summands : list of ndarray
+        Core tensors, each ``(d, d, chi_k, chi_k)`` with a common ``d``.
+
+    Returns
+    -------
+    ndarray
+        Shape ``(d, d, sum_k chi_k, sum_k chi_k)``.
+    """
     d = summands[0].shape[0]
     D = sum(B.shape[2] for B in summands)
     out = np.zeros((d, d, D, D), dtype=complex)
@@ -189,8 +222,10 @@ def solve_intertwiner(
     summands : list of ndarray
         Target channels :math:`B_k`, each ``(d, d, chi_k, chi_k)``.
     tol : float
-        Relative singular-value threshold defining the solution space, and
-        the rank threshold for injectivity.
+        Threshold on the singular values of the stacked system (relative to
+        ``max(1, largest singular value)``) that defines the solution space;
+        also the absolute rank threshold used to test that :math:`V` is
+        injective.
     rng : numpy.random.Generator, optional
         Used to pick a generic element of the solution space. Defaults to
         ``numpy.random.default_rng(0)`` (deterministic).
@@ -257,13 +292,24 @@ def solve_intertwiner(
 def verify_intertwiner(
     B_product: np.ndarray, summands: list[np.ndarray], V: np.ndarray, atol: float = 1e-6
 ) -> float:
-    r"""Residual of (I) for a given :math:`V`.
+    r"""Return the residual of the intertwiner condition (I) for a given :math:`V`.
+
+    Parameters
+    ----------
+    B_product : ndarray
+        Product tensor, shape ``(d, d, chi_prod, chi_prod)``.
+    summands : list of ndarray
+        Target channels :math:`B_k`, each ``(d, d, chi_k, chi_k)``.
+    V : ndarray
+        Candidate intertwiner, shape ``(chi_prod, sum_k chi_k)``.
+    atol : float
+        Unused; has no effect on the result.
 
     Returns
     -------
     float
         :math:`\max_{i,j}\|B_{\rm prod}[i,j]V - V B_\oplus[i,j]\|_F`.
-        (``atol`` is accepted for backward compatibility and unused.)
+        This is a diagnostic only: the caller compares it with a tolerance.
     """
     d = B_product.shape[0]
     B_oplus = _direct_sum(summands)
@@ -274,9 +320,7 @@ def verify_intertwiner(
     return worst
 
 
-# =====================================================================
-# Lee-Yang / Fibonacci skeleton
-# =====================================================================
+# --- Lee-Yang / Fibonacci skeleton ---
 
 
 def lee_yang_skeleton(alpha: float = 0.0, beta: float = np.pi) -> FusionSkeleton:
@@ -311,6 +355,15 @@ def lee_yang_skeleton(alpha: float = 0.0, beta: float = np.pi) -> FusionSkeleton
     Returns
     -------
     FusionSkeleton
+        Skeleton with ``d = 5``, ``bond_dim = 14``, channels ``"1"``, ``"e"``,
+        ``"sigma"`` (multiplicities 1, 2, 3) and boundary vectors of length 14.
+
+    Notes
+    -----
+    The core tensors and boundaries are explicit; this function does not call
+    :func:`solve_intertwiner` or :func:`verify_intertwiner`. No algebraic
+    certificate is checked for the generated chains; their unitarity is
+    validated numerically by the generator (``verify=True``).
     """
     zeta = np.sqrt((np.sqrt(5) - 1) / 2.0)
     d = 5

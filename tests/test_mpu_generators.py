@@ -1,18 +1,13 @@
-"""
-Construction-correctness tests for the mpu_generators package.
+"""Construction-correctness tests for the mpu_generators package.
 
-Every mechanism gets two independent checks:
-
-1. its defining algebraic condition ((RR), (FC), (B), (I), ...), checked
-   directly on the returned tensors at machine precision;
-2. global unitarity of the chain by dense contraction (``dense_chain``
-   below) at small N.
-
-Closed-form values from the thesis and from the translation-invariant
-working notes are used as regression anchors, and two negative results
-(combined readout of the group automaton is not unitary; the naive sum of
-two chains without a capped site is not unitary) are kept as negative
-controls.
+Every mechanism is verified twice: its defining algebraic condition ((RR),
+(FC), (B), (I), ...) is checked directly on the returned tensors, and the
+global unitarity of the chain is checked at small N against ``dense_chain``,
+a dense contraction written independently of the library, together with the
+boundary-operator residual of ``TreeMPU``. Closed-form values from the thesis
+serve as reference data. Two negative controls are included: combined readout
+of the group automaton is not unitary, and the naive sum of two chains without
+a capped site is not unitary.
 """
 
 import numpy as np
@@ -31,17 +26,17 @@ from mpu_generators.skeletons import (
     verify_intertwiner,
 )
 
-# =====================================================================
-# Helpers
-# =====================================================================
+# --- Helpers ---
 
 
 def dense_chain(tensors, l_vec, r_vec) -> np.ndarray:
-    """The N-site unitary as a d^N x d^N matrix.
+    """Return the N-site chain as a dense ``d^N x d^N`` matrix indexed ``[in, out]``.
 
-    Returns the matrix indexed ``[in, out]`` (i.e. :math:`U^\top`, site 0
-    most significant); unitarity checks are insensitive to the transpose.
-    Written independently of :func:`TreeMPU.checks.dense_unitary_from_tensors`.
+    Site 0 is the most significant digit of both dense indices, and the first
+    index is the input, so the result is the transpose of the operator. This
+    differs from the library's dense order (site 0 least significant). The
+    checks made here (unitarity, Frobenius norm, equality of chains) are
+    invariant under the transposition and the site relabelling.
     """
     M = np.einsum("ijab->aijb", np.asarray(tensors[0]))
     for A in tensors[1:]:
@@ -52,32 +47,35 @@ def dense_chain(tensors, l_vec, r_vec) -> np.ndarray:
 
 
 def _dense_defect(tensors, l, r):
+    """Return the Frobenius norm of ``U^dag U - 1`` for the dense chain."""
     U = dense_chain(tensors, l, r)
     return float(np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0])))
 
 
 def _boundary_residual_err(tensors, l, r):
+    """Return ``|1 - residual|`` of the TreeMPU boundary-operator computation."""
     _, _, residual = compute_chain_boundary_operators(tensors, l, r)
     return abs(1.0 - complex(residual))
 
 
 def _assert_unitary(tensors, l, r, atol=1e-8):
+    """Assert that the chain is unitary by dense contraction and boundary residual."""
     assert _dense_defect(tensors, l, r) < atol
     assert _boundary_residual_err(tensors, l, r) < atol
 
 
-# =====================================================================
-# MPUGenerator: branching (Mode I)
-# =====================================================================
+# --- MPUGenerator: branching (Mode I) ---
 
 
 def test_branching_general_satisfies_RR_and_is_unitary():
+    """Site-dependent Mode I chains are unitary."""
     gen = MPUGenerator(seed=0)
     tensors, l, r = gen.branching(d=3, bond_dim=2, n_blocks=2, blocking="auto")
     _assert_unitary(tensors, l, r)
 
 
 def test_branching_uniform_satisfies_RR_and_is_unitary():
+    """Translation-invariant Mode I chains are unitary and repeat one tensor."""
     gen = UniformMPUGenerator(seed=1)
     tensors, l, r = gen.branching(d=3, bond_dim=2, n_blocks=3, blocking=1)
     _assert_unitary(tensors, l, r)
@@ -86,6 +84,7 @@ def test_branching_uniform_satisfies_RR_and_is_unitary():
 
 
 def test_branching_combined_readout_D_aux_le_d_is_unitary():
+    """Combined readout of at most d vertices gives a unitary chain."""
     gen = MPUGenerator(seed=2)
     tensors, l, r = gen.branching(d=3, bond_dim=4, n_blocks=2, blocking=1, readout=[0, 1])
     _assert_unitary(tensors, l, r)
@@ -103,9 +102,9 @@ def test_branching_combined_readout_D_aux_le_d_is_unitary():
     ],
 )
 def test_branching_combined_readout_D_aux_gt_d_is_unitary(d, bond_dim, readout):
-    """
-    Combined readout with D_aux > d uses the multi-site cascade
-    (thesis rem:cascaded-readout); checked end to end by dense contraction.
+    """Combined readout through the multi-site cascade is unitary.
+
+    The cascade is the one of thesis ``rem:cascaded-readout``.
     """
     gen = MPUGenerator(seed=3)
     tensors, l, r = gen.branching(d=d, bond_dim=bond_dim, n_blocks=3, blocking=1, readout=readout)
@@ -116,41 +115,39 @@ def test_branching_combined_readout_D_aux_gt_d_is_unitary(d, bond_dim, readout):
     _assert_unitary(tensors, l, r)
 
 
-# =====================================================================
-# MPUGenerator: fusion (Mode II) -- three skeletons
-# =====================================================================
+# --- MPUGenerator: fusion (Mode II) -- three skeletons ---
 
 
 def test_fusion_cyclic_satisfies_FC_and_is_unitary():
+    """Mode II cyclic-skeleton chains are unitary."""
     gen = MPUGenerator(seed=4)
     tensors, l, r = gen.fusion(d=3, bond_dim=3, n_blocks=2, blocking=1, skeleton="cyclic")
     _assert_unitary(tensors, l, r)
 
 
 def test_fusion_nested_flag_satisfies_FC_and_is_unitary():
+    """Mode II nested-flag chains are unitary."""
     gen = MPUGenerator(seed=5)
     tensors, l, r = gen.fusion(d=3, bond_dim=2, n_blocks=2, blocking=1, skeleton="nested_flag")
     _assert_unitary(tensors, l, r)
 
 
 def test_matrix_unit_channels_satisfy_FC_with_separate_identity_channel():
-    """
-    Direct algebraic check, independent of the generator's own internal
-    verify=True path: the SEPARATE identity channel y_0 = 1_d plus the m^2
-    matrix-unit channels satisfy (FC) exactly.
-    """
+    """The identity channel plus the m^2 matrix-unit channels satisfy (FC)."""
     rng = np.random.default_rng(6)
     y, labels = _matrix_unit_channels(d=4, m=3, rng=rng)
     _check_matrix_unit_closure(y, labels)
 
 
 def test_fusion_matrix_units_satisfies_FC_and_is_unitary():
+    """Mode II matrix-unit chains are unitary."""
     gen = MPUGenerator(seed=6)
     tensors, l, r = gen.fusion(d=3, bond_dim=5, n_blocks=2, blocking=1, skeleton="matrix_units")
     _assert_unitary(tensors, l, r)
 
 
 def test_fusion_matrix_units_uniform_is_unitary():
+    """Translation-invariant matrix-unit chains are unitary and repeat one tensor."""
     gen = UniformMPUGenerator(seed=7)
     tensors, l, r = gen.fusion(d=4, bond_dim=10, n_blocks=3, blocking=1, skeleton="matrix_units")
     _assert_unitary(tensors, l, r)
@@ -158,46 +155,31 @@ def test_fusion_matrix_units_uniform_is_unitary():
 
 
 def test_fusion_matrix_units_m_equals_d_is_unitary():
-    """
-    m == d is a legitimate edge case: the separate identity channel becomes
-    a linear combination of the m^2 matrix-unit channels (sum_i y_(i,i) =
-    1_d exactly when {w_i} is a full basis), so the channel set is
-    rank-deficient by one -- generate() skips the full-rank check only in
-    this case, but the construction is still exactly unitary.
-    """
+    """The matrix-unit skeleton with m = d (rank-deficient channel set) is unitary."""
     gen = MPUGenerator(seed=8)
     tensors, l, r = gen.fusion(d=2, bond_dim=5, n_blocks=2, blocking=1, skeleton="matrix_units")
     _assert_unitary(tensors, l, r)
 
 
 def test_fusion_matrix_units_bad_bond_dim_raises_value_error():
+    """A bond dimension that is not 1 + m^2 is rejected."""
     with pytest.raises(ValueError):
         MPUGenerator(seed=9).fusion(
             d=4, bond_dim=4, n_blocks=2, blocking=1, skeleton="matrix_units"
         )
 
 
-# =====================================================================
-# MPUGenerator: fusion (Mode II) -- "group" skeleton (group convolution)
-# =====================================================================
+# --- MPUGenerator: fusion (Mode II) -- "group" skeleton (group convolution) ---
 
 
 def test_group_representation_check_catches_a_broken_homomorphism():
-    """
-    Sanity check on the safety net itself: _check_group_representation must
-    actually reject a representation that fails the homomorphism property,
-    not silently pass anything unitary. Directly reproduces the exact bug
-    this construction had during development (composing the dihedral
-    reflection generator on the wrong side desynchronizes two of the three
-    2-dim reflection matrices from their group elements).
-    """
+    """The representation check rejects unitaries violating the homomorphism property."""
     from mpu_generators.base import _check_group_representation, _finite_group_table
 
     elements, mult, _inv, _identity, irreps = _finite_group_table("S3", 3)
     dim, std = irreps[2]
-    # Swap the two non-identity rotation matrices against their elements --
-    # each individual matrix is still unitary, only the homomorphism
-    # property (rho(g)rho(h) == rho(gh)) breaks.
+    # Swapping two rotation matrices keeps each one unitary and breaks only
+    # the homomorphism property rho(g) rho(h) == rho(gh).
     broken = list(std)
     r_idx = elements.index((1, 2, 0))
     r2_idx = elements.index((2, 0, 1))
@@ -218,13 +200,9 @@ def test_group_representation_check_catches_a_broken_homomorphism():
     ],
 )
 def test_fusion_group_satisfies_FC_and_B_and_is_unitary(group, group_n, size):
-    """
-    "group" generalizes "cyclic" from Z_M (abelian only, diagonalized via
-    1-dim characters) to any finite group -- S3 (group_n is ignored for
-    S3, order fixed at 6) is the smallest non-abelian case;
-    "Zn_product" is any finite abelian group, a product of cyclic factors. (FC) and (B) are
-    checked directly against the raw group multiplication table (not
-    merely inferred from unitarity), exactly like the other skeletons.
+    """Group-convolution chains satisfy (FC) and (B) and are unitary.
+
+    (FC) and (B) are checked against the raw multiplication table.
     """
     from mpu_generators.base import (
         _check_fusion_closure_general,
@@ -272,6 +250,7 @@ def test_fusion_group_satisfies_FC_and_B_and_is_unitary(group, group_n, size):
 
 
 def test_fusion_group_bad_shape_raises_value_error():
+    """A group skeleton with d or bond_dim different from the group order is rejected."""
     with pytest.raises(ValueError):
         MPUGenerator(seed=0).fusion(
             d=5, bond_dim=5, n_blocks=2, blocking=1, skeleton="group", group="S3"
@@ -279,35 +258,35 @@ def test_fusion_group_bad_shape_raises_value_error():
 
 
 def test_fusion_group_unknown_group_raises_value_error():
+    """An unknown group name is rejected."""
     with pytest.raises(ValueError):
         MPUGenerator(seed=0).fusion(
             d=3, bond_dim=3, n_blocks=2, blocking=1, skeleton="group", group="XYZ"
         )
 
 
-# =====================================================================
-# MPUGenerator: grafted (Theorem 4)
-# =====================================================================
+# --- MPUGenerator: grafted (Theorem 4) ---
 
 
 def test_grafted_is_unitary():
+    """Grafted chains are unitary."""
     gen = MPUGenerator(seed=7)
     tensors, l, r = gen.grafted(d=2, bond_dim=4, n_blocks=2, blocking=1)
     _assert_unitary(tensors, l, r)
 
 
 def test_grafted_uniform_is_unitary():
+    """Translation-invariant grafted chains are unitary."""
     gen = UniformMPUGenerator(seed=8)
     tensors, l, r = gen.grafted(d=2, bond_dim=4, n_blocks=3, blocking=1)
     _assert_unitary(tensors, l, r)
 
 
-# =====================================================================
-# generate_random_mpu back-compat entry point
-# =====================================================================
+# --- generate_random_mpu functional entry point ---
 
 
 def test_generate_random_mpu_dispatches_correctly():
+    """The functional interface dispatches to the generators and returns unitaries."""
     tensors, l, r = generate_random_mpu(
         n_blocks=2, d=3, bond_dim=2, mode="branching", uniform=True, seed=0
     )
@@ -318,12 +297,14 @@ def test_generate_random_mpu_dispatches_correctly():
     _assert_unitary(tensors, l, r)
 
 
-# =====================================================================
-# Mode II-B: Intertwiner solver + Lee-Yang skeleton
-# =====================================================================
+# --- Mode II-B: Intertwiner solver + Lee-Yang skeleton ---
 
 
 def test_solve_intertwiner_recovers_valid_V_on_synthetic_example():
+    """The intertwiner solver returns a full-rank V with small residual.
+
+    The test uses a synthetic similarity example.
+    """
     rng = np.random.default_rng(0)
     d, D1, D2 = 2, 2, 3
     D = D1 + D2
@@ -342,13 +323,9 @@ def test_solve_intertwiner_recovers_valid_V_on_synthetic_example():
 
 
 def _lee_yang_mpu(alpha: float = 0.0, beta: float = np.pi, L_block: int = 2):
-    """
-    Separately typed copy of the Lee-Yang C* MPU data (d = 5).
+    """Return an independently typed Lee-Yang MPU copy, blocked L_block times.
 
-    It contains the same numerical tables as
-    :func:`mpu_generators.skeletons.lee_yang_skeleton`, so agreement guards
-    against accidental edits of those tables; the physics is checked by the
-    unitarity and fusion-rule tests.
+    The unblocked data have d = 5 and bond dimension 14.
     """
     zeta = np.sqrt((np.sqrt(5) - 1) / 2.0)
     d = 5
@@ -403,13 +380,8 @@ def _lee_yang_mpu(alpha: float = 0.0, beta: float = np.pi, L_block: int = 2):
     return A_blocked, l_vec, r_vec
 
 
-def test_lee_yang_skeleton_matches_existing_hand_derived_construction():
-    """
-    Undressed (W=I on every channel), the skeleton must reproduce
-    ``_lee_yang_mpu`` above byte for byte. Both contain the same tables, so
-    this guards against accidental edits; the physics is checked by the
-    unitarity and fusion-rule tests.
-    """
+def test_lee_yang_skeleton_matches_typed_tensor_tables():
+    """The undressed Lee-Yang skeleton equals the independently typed tensor tables."""
     from mpu_generators.skeletons import _dress_core_tensor
 
     sk = lee_yang_skeleton()
@@ -430,7 +402,7 @@ def test_lee_yang_skeleton_matches_existing_hand_derived_construction():
 
 
 def test_lee_yang_boundary_formula_matches_golden_ratio_identity():
-    """The boundary family uses zeta**2 = 1/phi (phi - 1/phi = 1); cross-check numerically."""
+    """The Lee-Yang boundary constants satisfy the golden-ratio identities."""
     zeta = np.sqrt((np.sqrt(5) - 1) / 2.0)
     phi = (1 + np.sqrt(5)) / 2
     assert abs(np.sqrt(5) - zeta**2 - phi) < 1e-12
@@ -438,6 +410,7 @@ def test_lee_yang_boundary_formula_matches_golden_ratio_identity():
 
 
 def test_fusion_bond_resolved_lee_yang_general_and_uniform_are_unitary():
+    """Mode II-B Lee-Yang chains, general and translation invariant, are unitary."""
     sk = lee_yang_skeleton()
     gen = MPUGenerator(seed=9, verify=True)
     tensors, l, r = gen.fusion_bond_resolved(sk, n_blocks=2, blocking=1)
@@ -448,9 +421,7 @@ def test_fusion_bond_resolved_lee_yang_general_and_uniform_are_unitary():
     _assert_unitary(tensors, l, r)
 
 
-# =====================================================================
-# UniformMPUGenerator Part I: no-resampling override applies to every mode
-# =====================================================================
+# --- UniformMPUGenerator Part I: no-resampling override applies to every mode ---
 
 
 @pytest.mark.parametrize(
@@ -462,18 +433,18 @@ def test_fusion_bond_resolved_lee_yang_general_and_uniform_are_unitary():
     ],
 )
 def test_uniform_generator_reuses_same_tensor_at_every_site(mode_call):
+    """The uniform generator repeats one tensor in every mode; the chain is unitary."""
     gen = UniformMPUGenerator(seed=11)
     tensors, l, r = mode_call(gen)
     assert all(np.array_equal(tensors[0], A) for A in tensors[1:])
     _assert_unitary(tensors, l, r)
 
 
-# =====================================================================
-# Part II: clock, group_automaton (+ its documented negative result)
-# =====================================================================
+# --- Part II: clock, group_automaton (+ its documented negative result) ---
 
 
 def test_clock_is_degree_one_RR_and_unitary():
+    """The clock tensor gives a unitary chain."""
     gen = UniformMPUGenerator(seed=12)
     A, l, r = gen.clock(D=4, d=2, seed=1)
     _assert_unitary([A] * 5, l, r)
@@ -481,7 +452,7 @@ def test_clock_is_degree_one_RR_and_unitary():
 
 @pytest.mark.parametrize("group,n", [("Zn", 4), ("Sn", 3)])
 def test_group_automaton_satisfies_RR_exactly(group, n):
-    """Pure permutation algebra: residual must be exactly 0, not just small."""
+    """The group automaton satisfies (RR) with zero residual (permutation algebra)."""
     gen = UniformMPUGenerator(seed=13)
     A, l, r = gen.group_automaton(group=group, n=n, seed=1)
     _, _, residual = compute_chain_boundary_operators([A] * 3, l, r)
@@ -490,36 +461,32 @@ def test_group_automaton_satisfies_RR_exactly(group, n):
 
 
 def test_group_automaton_combined_readout_is_not_free():
-    """
-    Negative control: ||Q_N[g,g']|| = sqrt(n^N) exactly for g != g', so
-    combined readout is not unitary for the group automaton.
-    """
+    """Combined readout of the group automaton is not unitary (negative control)."""
     gen = UniformMPUGenerator(seed=14)
     n = 3
     A, _l, r = gen.group_automaton(group="Zn", n=n, seed=1)
     N = 3
     U = dense_chain([A] * N, np.ones(n, dtype=complex), r)  # bare sum readout l = sum_g e_g
-    # Q_N[g,g'] read off via <g|U^dagger U|g'> block structure is
-    # equivalent, for this automaton, to checking the bare-sum readout is
-    # NOT unitary with a large, structured defect.
+    # A readout without cross terms between the n summed vertices would give
+    # U^dagger U = n * 1. The bound only needs to separate the structured
+    # violation of the bare sum from rounding noise.
     defect = np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0]) * n)
-    assert defect > 1.0  # generic-branch mixing: nowhere near proportional-to-identity
+    assert defect > 1.0
 
 
 def test_group_automaton_cocycle_preserves_RR():
+    """Unimodular cocycle phases keep the group automaton unitary."""
     gen = UniformMPUGenerator(seed=15)
     cocycle = lambda g, h: np.exp(1j * 0.37 * (g + h))
     A, l, r = gen.group_automaton(group="Zn", n=4, cocycle=cocycle, seed=1)
     _assert_unitary([A] * 3, l, r)
 
 
-# =====================================================================
-# Part III: self-direction (star), resonant, multi-symbol,
-# invariant subspace, degenerate rows
-# =====================================================================
+# --- Part III: self-direction (star), resonant, multi-symbol, invariant subspace, degenerate rows ---
 
 
-def test_self_direction_matches_closed_form():
+def test_self_direction_dense_chain_is_unitary():
+    """The self-direction chain is unitary by dense contraction at N = 4."""
     gen = UniformMPUGenerator(seed=16)
     D, d, mu, N = 4, 2, complex(np.exp(1j * 0.7)), 4
     A, l, r = gen.self_direction(D=D, d=d, mu=mu, seed=1)
@@ -529,6 +496,7 @@ def test_self_direction_matches_closed_form():
 
 
 def test_self_direction_is_unitary_for_several_mu():
+    """The self-direction chain is unitary for several unimodular mu."""
     gen = UniformMPUGenerator(seed=17)
     for mu in (1.0, np.exp(1j * 0.3), -1.0):
         A, l, r = gen.self_direction(D=3, d=2, mu=mu, seed=1)
@@ -536,7 +504,10 @@ def test_self_direction_is_unitary_for_several_mu():
 
 
 def test_resonant_M_is_not_unitary_but_chain_is():
-    """M^D = 1 does not imply that M is unitary, yet the chain is unitary."""
+    """The resonant bond matrix satisfies M^D = 1 without being unitary.
+
+    The chain is nevertheless unitary.
+    """
     gen = UniformMPUGenerator(seed=18)
     D, d, N = 5, 2, 5
     rng = np.random.default_rng(1)
@@ -552,6 +523,7 @@ def test_resonant_M_is_not_unitary_but_chain_is():
 
 
 def test_resonant_reproduces_target_phase_sequence():
+    """The resonant chain has unit-modulus prefactor c_N for the prescribed phases."""
     gen = UniformMPUGenerator(seed=19)
     D, d = 4, 2
     theta = np.array([0.1, 1.3, 2.7, 4.2])
@@ -559,20 +531,19 @@ def test_resonant_reproduces_target_phase_sequence():
     A, l, r = gen.resonant(D=D, d=d, target_phases=target, seed=1)
     for N in range(1, D + 1):
         U = dense_chain([A] * N, l, r)
-        # U should equal c_N * (some fixed unitary)^{otimes N}; check the
-        # phase by comparing U's top-left entry ratio to a fresh N=1 build.
-        assert (
-            abs(np.linalg.norm(U) ** 2 - d**N) < 1e-6
-        )  # ||U||_F^2 == d^N iff |c_N|=1 and U/c_N unitary
+        # U = c_N * (fixed unitary)^{otimes N} with |c_N| = 1, so ||U||_F^2 = d^N.
+        assert abs(np.linalg.norm(U) ** 2 - d**N) < 1e-6
 
 
 def test_multi_symbol_is_instance_of_self_direction():
+    """The multi-symbol automaton gives a unitary chain."""
     gen = UniformMPUGenerator(seed=20)
     A, l, r = gen.multi_symbol(d=3, seed=1)
     _assert_unitary([A] * 4, l, r)
 
 
-def test_invariant_subspace_rank1_recovers_self_direction():
+def test_invariant_subspace_without_extra_dimensions_is_unitary():
+    """Embedding a bond-dimension-1 chain without extra dimensions is unitary."""
     gen = UniformMPUGenerator(seed=21)
     sub_A, sub_l, sub_r = gen.self_direction(D=1, d=2, mu=1.0, seed=1)
     A, l, r = gen.invariant_subspace(sub_A, sub_l, sub_r, D_extra=0, seed=2)
@@ -580,6 +551,7 @@ def test_invariant_subspace_rank1_recovers_self_direction():
 
 
 def test_invariant_subspace_generic_basis_is_unitary():
+    """Embedding in a generic basis with extra bond dimensions stays unitary."""
     gen = UniformMPUGenerator(seed=22)
     sub_A, sub_l, sub_r = gen.self_direction(D=2, d=3, mu=1.0, seed=1)
     A, l, r = gen.invariant_subspace(sub_A, sub_l, sub_r, D_extra=3, seed=2)
@@ -587,10 +559,7 @@ def test_invariant_subspace_generic_basis_is_unitary():
 
 
 def test_invariant_subspace_nests_multi_symbol():
-    """
-    multi_symbol(d=3) (bond dimension 3) embedded by invariant_subspace
-    with 2 extra bond dimensions (D = 5).
-    """
+    """A multi-symbol chain embedded with two extra bond dimensions is unitary."""
     gen = UniformMPUGenerator(seed=24)
     sub_A, sub_l, sub_r = gen.multi_symbol(d=3, seed=0)
     A, l, r = gen.invariant_subspace(sub_A, sub_l, sub_r, D_extra=2, seed=1)
@@ -599,10 +568,11 @@ def test_invariant_subspace_nests_multi_symbol():
 
 
 def test_degenerate_rows_D_d_2_is_unitary():
+    """Duplicated rows keep the chain unitary and give identical partial chains."""
     gen = UniformMPUGenerator(seed=23)
     A, l, r = gen.degenerate_rows(D=2, d=2, seed=1)
     _assert_unitary([A] * 5, l, r)
-    # Xi_n[0] == Xi_n[1] for every n (the whole point of the construction).
+    # Duplicated rows give identical partial chains Xi_n at every n.
     U_from_e0 = dense_chain([A] * 3, np.array([1.0, 0.0], dtype=complex), r)
     U_from_e1 = dense_chain([A] * 3, np.array([0.0, 1.0], dtype=complex), r)
     assert np.allclose(U_from_e0, U_from_e1)
@@ -618,10 +588,9 @@ def test_degenerate_rows_D_d_2_is_unitary():
     ],
 )
 def test_degenerate_rows_general_D_d_matches_within_every_group_and_is_unitary(D, d, groups):
-    """
-    Xi_{n+1}[a] depends on Xi_n only through row a of A, so duplicated
-    (RR) rows give identical Xi_n within each group at every n, for any D,
-    d and row partition; unitarity is the ordinary Mode I guarantee.
+    """Rows duplicated within each group give identical partial chains.
+
+    The resulting chain is unitary.
     """
     gen = UniformMPUGenerator(seed=25)
     A, l, r = gen.degenerate_rows(D=D, d=d, groups=groups, seed=25)
@@ -637,26 +606,28 @@ def test_degenerate_rows_general_D_d_matches_within_every_group_and_is_unitary(D
 
 
 def test_degenerate_rows_bad_D_raises_value_error():
+    """D < 2 is rejected."""
     with pytest.raises(ValueError):
         UniformMPUGenerator(seed=24).degenerate_rows(D=1, d=2)
 
 
 def test_degenerate_rows_overlapping_groups_raises_value_error():
+    """Overlapping row groups are rejected."""
     with pytest.raises(ValueError):
         UniformMPUGenerator(seed=24).degenerate_rows(D=3, d=2, groups=[[0, 1], [1, 2]])
 
 
 def test_degenerate_rows_singleton_group_raises_value_error():
+    """A group with a single row is rejected."""
     with pytest.raises(ValueError):
         UniformMPUGenerator(seed=24).degenerate_rows(D=3, d=2, groups=[[0]])
 
 
-# =====================================================================
-# Part IV: mixing (stack, nest, capped_sum) + naive-sum negative result
-# =====================================================================
+# --- Part IV: mixing (stack, nest, capped_sum) + naive-sum negative result ---
 
 
 def test_stack_composes_two_unitaries():
+    """Stacking two unitary chains gives a unitary chain."""
     gen1 = UniformMPUGenerator(seed=25)
     gen2 = UniformMPUGenerator(seed=26)
     N = 3
@@ -667,6 +638,7 @@ def test_stack_composes_two_unitaries():
 
 
 def test_nest_is_invariant_subspace_alias():
+    """nest returns a unitary chain when given a generator, like invariant_subspace."""
     gen = UniformMPUGenerator(seed=27)
     sub_A, sub_l, sub_r = gen.self_direction(D=2, d=2, mu=1.0, seed=1)
     A, l, r = nest(sub_A, sub_l, sub_r, D_extra=2, seed=2, generator=gen)
@@ -674,7 +646,7 @@ def test_nest_is_invariant_subspace_alias():
 
 
 def test_capped_sum_combines_two_unrelated_mechanisms():
-    """Capped sum of two unrelated mechanisms: self-direction + group automaton."""
+    """The capped sum of two unrelated unitary chains is unitary."""
     gen1 = UniformMPUGenerator(seed=28)
     gen2 = UniformMPUGenerator(seed=29)
     N = 3
@@ -686,11 +658,7 @@ def test_capped_sum_combines_two_unrelated_mechanisms():
 
 
 def test_naive_sum_without_capped_site_fails():
-    """
-    Negative control: summing l1 + l2 on a block-diagonal bond without the
-    extra (RR) site is not unitary in general (the U^(1)dag U^(2) cross
-    terms do not cancel).
-    """
+    """The naive sum without a capped site is not unitary (negative control)."""
     gen1 = UniformMPUGenerator(seed=30)
     gen2 = UniformMPUGenerator(seed=31)
     N = 3

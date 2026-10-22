@@ -5,7 +5,9 @@ r"""Named MPU families used in the thesis and in the tensor-first sampling paper
 :func:`build_family` builds one instance with exactly the generator
 settings used for the numerical results of the thesis (Chapter "Numerical
 results"), so that e.g. ``build_family("branching_uniform", d=2, bond_dim=2,
-seed=3)`` reproduces that instance.
+seed=3)`` reproduces that instance. The families are thin presets of the
+generator methods ``branching``, ``grafted``, ``fusion`` and
+``fusion_bond_resolved``; the registry itself adds no construction.
 
 ========================================  ======  =========================================
 name                                      mode    construction
@@ -63,39 +65,72 @@ def build_family(
     name : str
         A key of :data:`FAMILIES`.
     d : int
-        Local physical dimension (ignored by families with a fixed ``d``).
+        Local physical dimension (default 2). Ignored by the families with a
+        fixed ``d``: ``fusion_group_S3`` (6), ``fusion_group_Zn_product`` (8)
+        and ``fusion_bond_resolved_lee_yang`` (5).
     bond_dim : int
-        Bond dimension. For ``grafted`` the bond dimension used is
-        ``2 * max(1, bond_dim // 2)``.
+        Bond dimension (default 2). For ``grafted`` the bond dimension used
+        is ``2 * max(1, bond_dim // 2)``. Ignored by the families with a
+        fixed bond dimension (``fusion_group_S3``, ``fusion_group_Zn_product``,
+        ``fusion_bond_resolved_lee_yang``); for ``fusion_group_Zn`` it must
+        equal ``d``.
     seed : int
-        Generator seed.
+        Generator seed (default 0).
     n_sites : int, optional
-        Number of physical sites. If omitted, a two-tensor chain is built
-        (``n_blocks=2``).
+        Number of physical sites. If omitted (or 0), a two-tensor chain is
+        built (``n_blocks=2``).
     coherent_in_n : bool
-        Passed to the generator (see :class:`~mpu_generators.base.MPUGenerator`).
+        Passed to the generator constructor (default True; see
+        :class:`~mpu_generators.base.MPUGenerator`).
     **options
-        Extra keyword arguments of the underlying generator method, e.g.
-        ``digraph``, ``out_degree``, ``ranks`` for the Mode I families.
+        Keyword arguments forwarded unchanged to the generator method of the
+        family. They are merged after the size argument, which is
+        ``n_sites`` if given and otherwise the default ``n_blocks=2``; so
+        ``n_blocks`` in ``options`` replaces only that default. Giving
+        ``n_blocks`` together with ``n_sites``, or ``n_sites`` without
+        replacing the default, passes both to the generator, which raises
+        ``ValueError``. ``options`` must not repeat an argument fixed by the
+        family (``blocking``, ``max_blocking``, ``skeleton``, ``group``,
+        ``group_n``, ``d``, ``bond_dim``). Typical use: ``digraph``,
+        ``out_degree``, ``ranks`` and ``readout`` for the Mode I families,
+        ``n_blocks`` for all of them.
 
     Returns
     -------
-    tensors, l_vec, r_vec
-        Site tensors ``A[p_in, p_out, bond_L, bond_R]`` and boundaries.
+    tensors : list of ndarray
+        Site tensors ``A[p_in, p_out, bond_L, bond_R]``, one per block.
+    l_vec, r_vec : ndarray
+        Boundary vectors of length equal to the bond dimension.
 
     Raises
     ------
     KeyError
         Unknown family name.
     ValueError
-        The ``(d, bond_dim)`` combination is not valid for this family.
+        The ``(d, bond_dim)`` combination is not valid for this family
+        (checked here for ``fusion_matrix_units`` and ``fusion_group_Zn``;
+        for the other families the generator method raises), or both
+        ``n_sites`` and ``n_blocks`` are given.
+    RuntimeError
+        A numerical safeguard of the generator (``verify=True``) fails.
+    TypeError
+        An entry of ``options`` repeats an argument fixed by the family or is
+        not accepted by the generator method.
 
     Notes
     -----
     Mode I families use ``blocking="auto", max_blocking=2`` (the smallest
     block size, up to 2, whose chain has full-rank boundary operators at
     every cut, ``TreeMPU.utils.satisfies_assumption_1``), all others
-    ``blocking=1``, as in the thesis production runs.
+    ``blocking=1``, as in the thesis production runs. The generator runs with
+    ``verify=True``, but not every chain is algebraically certified:
+    Mode I checks (RR); ``grafted`` checks (RR), (FC) and the flat-spectrum
+    boundary; the Mode II skeletons check (FC), and the boundary condition
+    (B) only for ``cyclic`` (flat spectrum) and ``group``, not for
+    ``nested_flag`` and ``matrix_units``; the Lee-Yang family has no
+    algebraic check at all. For every family unitarity is
+    validated numerically: normalization for any ``N`` and a dense check to
+    tolerance when ``d ** N <= 2 ** 10``.
     """
     from .base import MPUGenerator
     from .uniform import UniformMPUGenerator

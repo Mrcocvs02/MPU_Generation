@@ -1,7 +1,10 @@
-"""Mode I ensemble options: hand-picked / random digraphs and rank partitions, per-N draws.
+"""Mode I ensemble options: hand-picked or random digraphs and rank partitions.
 
-Every option must stay inside the certified class (exact unitarity for every
-N) and leave the default ensemble bit-identical.
+Every option is verified to stay inside the certified class, i.e. the dense
+chain unitary (``TreeMPU.checks.dense_unitary_from_tensors``) is unitary for
+several N, and to leave the default ensemble bit-identical. The sampler of
+rank compositions is compared with the exact uniform distribution, and
+invalid options are checked to raise.
 """
 
 import numpy as np
@@ -13,6 +16,7 @@ from mpu_generators.base import _random_composition
 
 
 def _unitary_error(t, l, r):
+    """Return the Frobenius norm of ``U^dag U - 1`` for the dense chain."""
     U = dense_unitary_from_tensors(t, l, r)
     return np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0]))
 
@@ -43,12 +47,14 @@ DIGRAPH = {0: [0, 2], 1: [1], 2: [0, 1, 2]}
     ],
 )
 def test_mode1_options_stay_unitary(cls, kw):
+    """Every Mode I option combination gives unitary chains for several N."""
     for N in (2, 3, 4):
         t, l, r = cls(seed=5).branching(d=3, bond_dim=3, n_sites=N, **kw)
         assert _unitary_error(t, l, r) < 1e-10
 
 
 def test_handpicked_digraph_and_ranks_are_used():
+    """A given digraph and rank assignment appear as the tensor's block ranks."""
     ranks = {0: [1, 2], 1: [3], 2: [1, 1, 1]}
     t, _, _ = UniformMPUGenerator(seed=0).branching(
         d=3, bond_dim=3, n_sites=2, digraph=DIGRAPH, ranks=ranks
@@ -61,6 +67,7 @@ def test_handpicked_digraph_and_ranks_are_used():
 
 
 def test_random_ranks_cover_unbalanced_partitions():
+    """Random ranks reach every composition of the row rank."""
     seen = set()
     for seed in range(40):
         t, _, _ = UniformMPUGenerator(seed=seed).branching(
@@ -71,6 +78,7 @@ def test_random_ranks_cover_unbalanced_partitions():
 
 
 def test_random_composition_is_uniform():
+    """Random compositions are uniformly distributed."""
     rng = np.random.default_rng(0)
     counts = {}
     for _ in range(6000):
@@ -92,11 +100,13 @@ def test_random_composition_is_uniform():
     ],
 )
 def test_invalid_mode1_options_are_rejected(kw, msg):
+    """Invalid digraph and rank options raise ValueError."""
     with pytest.raises(ValueError, match=msg):
         MPUGenerator(seed=0).branching(d=2, bond_dim=2, n_sites=2, **kw)
 
 
-def test_default_ensemble_is_unchanged_by_the_new_options():
+def test_ranks_balanced_reproduces_default_ensemble():
+    """Passing ranks="balanced" reproduces the default ensemble exactly."""
     a = UniformMPUGenerator(seed=3).branching(d=2, bond_dim=2, n_sites=3)
     b = UniformMPUGenerator(seed=3).branching(d=2, bond_dim=2, n_sites=3, ranks="balanced")
     for x, y in zip(a[0], b[0], strict=True):
@@ -104,6 +114,10 @@ def test_default_ensemble_is_unchanged_by_the_new_options():
 
 
 def test_coherent_in_n_switch():
+    """coherent_in_n=True makes the site tensor independent of N.
+
+    With False the tensor depends on N and stays reproducible for a fixed seed.
+    """
     coherent = [
         UniformMPUGenerator(seed=2).branching(d=2, bond_dim=2, n_sites=N)[0][0] for N in (2, 3)
     ]

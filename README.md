@@ -7,11 +7,12 @@
 Certified random generators for Matrix Product Unitaries (MPUs): sample
 tensors that are unitary for every chain length $N$ under a
 single fixed generative rule, rather than approximately unitary or
-unitary only on average. Every construction confines the relevant
-transfer object to an $N$-independent algebraic family *by design*: an
-identity of the local tensor and boundary data implies unitarity for every
+unitary only on average. Every construction except Mode II-B confines the
+relevant transfer object to an $N$-independent algebraic family *by design*:
+an identity of the local tensor and boundary data implies unitarity for every
 length — nothing here relies on statistical typicality, large-$N$
-concentration, or rejection sampling.
+concentration, or rejection sampling. Mode II-B (Lee–Yang) is validated
+numerically only (see [Background](#background)).
 
 **Documentation:** [user guide](docs/userguide.md) ·
 [tutorial notebooks](https://github.com/Mrcocvs02/TreeMPU/tree/main/notebooks) (02, 03, 06) ·
@@ -51,42 +52,51 @@ Two classes, sharing one construction:
   combined multi-vertex readout via an auxiliary cascade of sites.
 - **Mode II — `fusion`** (fusion closure): a bond-diagonal tensor whose
   channel matrices close under a fixed fusion rule. Four built-in
-  skeletons — `cyclic` ($\mathbb{Z}_M$ characters), `nested_flag`
-  (shrinking-flag projectors, the diagonal-phase/MCZ-type family),
-  `matrix_units` (identity channel + matrix units), and `group` (regular
-  representation of any finite group, abelian or not — `Zn`,
-  `Zn_product`, `S3`).
+  skeletons — `cyclic` ($\mathbb{Z}_M$ characters; a group convolution only
+  when $M$ divides $d$), `nested_flag` (shrinking-flag projectors, the
+  diagonal-phase/MCZ-type family), `matrix_units` (identity channel + matrix
+  units), and `group` (regular representation of a finite group, abelian or
+  not; the construction applies to any finite group given its tables, and the
+  implemented groups are `Zn`, `Zn_product` and `S3`).
 - **Mode II-B — `fusion_bond_resolved`** (bond-resolved fusion): per-channel
-  core tensors fixed once by solving the Intertwiner condition, then only
-  the per-site Haar dressing is resampled. Ships with the Lee-Yang/Fibonacci
-  skeleton (`lee_yang_skeleton`, $d=5$, bond dimension 14) out of the box.
-- **Grafted composition** (thesis `thm:grafted-factorization`): a Mode I two-vertex path algebra
-  grafted inside the channels of a Mode II cyclic-convolution skeleton —
-  a product of two independently certified unitaries.
+  core tensors fixed once in a `FusionSkeleton`, then only the per-site Haar
+  dressing is resampled. Ships with the Lee-Yang/Fibonacci skeleton
+  (`lee_yang_skeleton`, $d=5$, bond dimension 14), whose tensors are typed
+  explicitly. No algebraic certificate is checked at generation; unitarity is
+  validated numerically only.
+- **Grafted composition** (thesis `thm:grafted-factorization`): a Mode I
+  two-vertex path algebra grafted inside the channels of the Mode II `cyclic`
+  skeleton (a group convolution when the channel count divides $d$) — a
+  product of two independently certified unitaries.
 - **Translationally-invariant-only mechanisms** (`UniformMPUGenerator`):
   `clock`, `group_automaton`, `self_direction`, `resonant`,
   `multi_symbol`, `invariant_subspace`, `degenerate_rows` — single-tensor
-  constructions from working notes, not part of the thesis or paper:
-  `clock`, `group_automaton` and `degenerate_rows` are special cases of
-  Mode I; `self_direction`, `resonant` and `multi_symbol` give on-site
-  product unitaries.
+  constructions that are not part of the thesis or paper and are validated by
+  the unit tests only: `clock`, `group_automaton` and `degenerate_rows` are
+  special cases of Mode I; `self_direction`, `resonant` and `multi_symbol`
+  give on-site product unitaries.
 - **Mixing combinators** (`mixing.py`): `stack` (operator composition),
-  `nest` (rank-$k$ invariant subspace), `capped_sum` (a capped, provably
-  unitary sum of two independently certified chains).
-- **Two-layer checking** on every construction: the defining algebraic
-  condition (the certificate) is checked directly, and the assembled chain
-  passes numerical safeguards (normalization for any $N$, plus an exact
-  dense unitarity check when $d^N \le 2^{10}$).
+  `nest` (rank-$k$ invariant subspace), `capped_sum` (a capped sum of two
+  unitary chains, unitary by (RR) of its readout row, thesis
+  `cor:mode1-readout`).
+- **Two-layer checking** (with `verify=True`): for Modes I, II and the
+  grafted composition the defining algebraic condition (the certificate) is
+  checked, with the boundary-condition exceptions listed under
+  [Verification](#verification-and-certification); every assembled chain also
+  passes numerical safeguards (normalization for any $N$, plus a dense
+  unitarity check to tolerance when $d^N \le 2^{10}$).
 
 ## Background
 
 "Certified" here means something specific: for Modes I and II and the
-grafted composition, unitarity is guaranteed by an *algebraic condition on
-the site tensor itself*, proved once and checked directly on every draw —
-not inferred from spot-checking a few chain lengths. Mode II-B (Lee–Yang)
-is the exception: only the intertwiner condition is checked, and global
-unitarity is verified numerically (dense for $d^N \le 2^{10}$,
-normalization beyond).
+grafted composition, unitarity follows from an *algebraic condition on
+the site tensor itself*, proved once in the thesis; with `verify=True` the
+condition is re-checked numerically on every draw (for Mode II, the boundary
+condition only for the `cyclic` and `group` skeletons) — not inferred from
+spot-checking a few chain lengths. Mode II-B (Lee–Yang) is the exception: no
+algebraic certificate is checked at generation, and unitarity is validated
+numerically only (normalization for any $N$, dense check to tolerance for
+$d^N \le 2^{10}$).
 
 - **Row Resolution (RR)**, Mode I: each row of the branching tensor must
   satisfy completeness ($\sum_u A_u^\dagger A_u = \mathbb{1}$) and
@@ -100,24 +110,28 @@ normalization beyond).
   must solve one global quadratic equation. Each of the four skeletons
   supplies its own closed-form or Fourier-based solution to both
   conditions (e.g. `group`'s boundary uses a Peter–Weyl generalization of
-  the flat-spectrum trick — the generic linear solver was checked *not*
-  to work there).
+  the flat-spectrum trick; it is built in closed form, not by a generic
+  linear solve).
 - **Intertwiner condition (I)**, Mode II-B: the product of two channel
-  MPOs must be related to the direct sum of the target channels by an
-  injective (generally rectangular) intertwiner $V$
-  (`skeletons.solve_intertwiner`; Lee–Yang: $V$ is $9\times5$). The core
-  tensors are fixed once per skeleton; only the per-site Haar dressing
-  varies between draws.
+  MPOs is related to the direct sum of the target channels by an
+  injective (generally rectangular) intertwiner $V$ (Lee–Yang: $V$ is
+  $9\times5$). `skeletons.solve_intertwiner` and
+  `skeletons.verify_intertwiner` are standalone helpers for this condition;
+  the generators do not call them, and `lee_yang_skeleton` builds its core
+  tensors explicitly. The core tensors are fixed once per skeleton; only the
+  per-site Haar dressing varies between draws.
 - **Self-direction closed form**, translation-invariant-only
-  constructions: an ansatz $\sum_b A[a,b]\,r_b = \mu\, r_a\, W$ whose "junk"
-  component on $r^\perp$ vanishes identically (these give on-site product
-  unitaries; not part of the thesis or paper).
+  constructions: the condition $\sum_b A[a,b]\,r_b = \mu\, r_a\, W$,
+  solved by a tensor whose "junk" component on $r^\perp$ vanishes
+  identically (these give on-site product unitaries; not part of the thesis
+  or paper).
 
 Beyond the per-mechanism certificate, `verify=True` runs two independent
 numerical safeguards on every assembled chain: the normalization
 $\mathrm{Tr}(U^\dagger U)/d^N = 1$ (one sweep, any $N$; necessary, not
-sufficient) and, when $d^N \le 2^{10}$, the exact dense condition
-$U^\dagger U = \mathbb 1$. Either failure raises `RuntimeError`.
+sufficient) and, when $d^N \le 2^{10}$, the dense condition
+$\|U^\dagger U - \mathbb 1\|_F \le 10^{-8}\sqrt{d^N}$. Either failure
+raises `RuntimeError`.
 
 ## Install
 
@@ -191,9 +205,24 @@ from mpu_generators import (
 ```
 
 Every generation method — on either class — returns
-`(tensors, l_vec, r_vec)`: `tensors` a `list[np.ndarray]` (one bulk
-tensor per site, convention `A[p_in, p_out, bond_L, bond_R]`), plus the
+`(tensors, l_vec, r_vec)`: `tensors` a `list[np.ndarray]` (one tensor per
+block of `blocking` sites, i.e. one per site when `blocking=1`), plus the
 left/right boundary vectors closing the chain.
+
+**Conventions.**
+
+- Tensors are `A[p_in, p_out, bond_L, bond_R]`: the first physical index is
+  the input.
+- The block stored at `A[:, :, v, u]` is the *transpose* of the operator
+  $A[v,u]$ (rows = output) used in the thesis.
+- `l_vec` and `r_vec` contract linearly, *without* complex conjugation:
+  $U_N=\sum \ell_{v_0} r_{v_N}\,A[v_0,v_1]\otimes\cdots\otimes A[v_{N-1},v_N]$.
+- Sites are built in construction order and reversed at the end
+  (`_finalize_chain`). With per-site resampling, chains for increasing $N$
+  therefore extend a common sequence at the *left* end (Mode II-B, which is
+  not reversed: at the right end).
+- Dense matrices from `TreeMPU.checks.dense_unitary_from_tensors` are
+  `U[out, in]` with site 0 the least significant digit (Qiskit order).
 
 ### `MPUGenerator(seed=0, verify=True, coherent_in_n=True)`
 
@@ -211,10 +240,10 @@ factor satisfying Assumption 1, capped by `max_blocking`).
 
 | Method | Mode | Key parameters / constraints |
 |---|---|---|
-| `branching(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, readout=None, digraph=None, out_degree=None, ranks="balanced")` | I | `readout`: list of vertices for combined multi-vertex readout, any auxiliary dimension; `digraph`: hand-picked `{v: [targets]}` (1 to `d` distinct targets per vertex, used at every site); `out_degree`: int or `"random"` (uniform in `1..min(d, bond_dim)` per vertex); `ranks`: `"balanced"`, `"random"` (uniform composition of `d`) or hand-picked `{v: [ranks]}` (needs `digraph`). Non-default choices are different ensembles on the same certified class. |
-| `fusion(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, skeleton="cyclic", group="Zn", group_n=3)` | II | `skeleton in {"cyclic","nested_flag","matrix_units","group"}`; `cyclic` needs `bond_dim <= d`; `matrix_units` needs `bond_dim = 1 + m**2` for integer `m` (2, 5, 10, 17, 26, ...); `group` needs `d = bond_dim = |G|`, `group in {"Zn","Zn_product","S3"}` |
+| `branching(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, readout=None, digraph=None, out_degree=None, ranks="balanced")` | I | `readout`: list of vertices for combined multi-vertex readout, any auxiliary dimension; it appends $m=\max(1,\lceil\log_d\lvert\text{readout}\rvert\rceil)$ sites, so `blocking` must divide both `n_sites` and `n_sites + m` (hence $m$); `digraph`: hand-picked `{v: [targets]}` (1 to `d` distinct targets per vertex, used at every site); `out_degree`: int or `"random"` (uniform in `1..min(d, bond_dim)` per vertex); `ranks`: `"balanced"`, `"random"` (uniform composition of `d`) or hand-picked `{v: [ranks]}` (needs `digraph`). Non-default choices are different ensembles on the same certified class. |
+| `fusion(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, skeleton="cyclic", group="Zn", group_n=3)` | II | `skeleton in {"cyclic","nested_flag","matrix_units","group"}`; `cyclic` and `nested_flag` need `bond_dim <= d` (`cyclic` is a group convolution only when `bond_dim` divides `d`); `matrix_units` needs `bond_dim = 1 + m**2` for integer `m <= d` (`bond_dim` = 2, 5, 10, 17, 26, ...); `group` needs `d = bond_dim = |G|` with `group in {"Zn","Zn_product","S3"}` (for `Zn`, `|G| = group_n`) |
 | `fusion_bond_resolved(skeleton, n_sites=None, n_blocks=None, blocking=1, max_blocking=8)` | II-B | `skeleton`: a pre-built `FusionSkeleton` (e.g. from `mpu_generators.skeletons.lee_yang_skeleton()`) |
-| `grafted(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8)` | I + II | requires even `bond_dim` (`= 2 * n_channels`) |
+| `grafted(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8)` | I + II | requires even `bond_dim` (`= 2 * n_channels`) with `n_channels <= d`; the channels are the `cyclic` skeleton, a group convolution only when `n_channels` divides `d` |
 
 `blocking="auto"` retries increasing block sizes until the boundary
 operators have full rank at every cut (minimal bond dimension, as checked
@@ -244,17 +273,16 @@ reused bulk tensor `(A, l_vec, r_vec)` (use `[A] * N`):
 |---|---|
 | `clock(D=3, d=2, seed=None)` | A $D$-cycle permutation dressed by $D$ independent Haar unitaries — the degree-1 special case of (RR) |
 | `group_automaton(group="Zn", n=3, cocycle=None, seed=None)` | Group-multiplication automaton $A[g,h]=\lvert h\rangle\langle g^{-1}h\rvert$, optionally dressed by a 2-cocycle; `group in {"Zn","Sn"}` |
-| `self_direction(D=4, d=2, mu=1.0, W=None, seed=None)` | The $(\star)$ ansatz $\sum_b A[a,b]\,r_b = \mu\, r_a\, W$ |
+| `self_direction(D=4, d=2, mu=1.0, W=None, seed=None)` | A tensor satisfying $\sum_b A[a,b]\,r_b = \mu\, r_a\, W$ |
 | `resonant(D=5, d=2, target_phases=None, seed=None)` | Spectrum on the $D$-th roots of unity, embedded via a non-unitary change of basis that is still diagonalizable with unit-modulus eigenvalues |
 | `multi_symbol(d=3, seed=None)` | Special case of `self_direction` with $\mu=1$, $W=\operatorname{diag}(\mu_0,\dots,\mu_{d-1})$ — not an independent mechanism |
 | `invariant_subspace(sub_A, sub_l, sub_r, D_extra=2, seed=None)` | Any other TI mechanism's output restricted, in a generic basis, to a closed invariant subspace containing $r$ |
 | `degenerate_rows(D=2, d=2, groups=None, seed=None)` | Literal row duplication of a Mode I tensor — (RR) still holds per row regardless of duplication |
 
-Two variants from the working notes are not implemented because they
-fail: dressing a unitary on ancilla ⊗ physical does not produce (RR) (the
-resolutions of the identity it gives sum over the wrong index), and a
-triangular (Jordan-type) extension leaves a boundary mismatch with the
-bulk.
+Two variants are not implemented: dressing a unitary on ancilla ⊗ physical
+does not produce (RR) (the resolutions of the identity it gives sum over the
+wrong index), and a triangular (Jordan-type) extension leaves a boundary
+mismatch with the bulk.
 
 ### `generate_random_mpu(...)`
 
@@ -281,50 +309,58 @@ branching) via `**mode_kwargs`. `fusion_bond_resolved` (Mode II-B) is
 **not** reachable through this dispatcher — it needs a pre-built
 `FusionSkeleton` object rather than scalar keyword arguments, so call
 `MPUGenerator.fusion_bond_resolved`/`UniformMPUGenerator.fusion_bond_resolved`
-directly for it.
+directly for it. The dispatcher has no `coherent_in_n` argument (the
+generator keeps its default `True`).
 
 ## Mixing combinators
 
-`mpu_generators.mixing` combines two already-certified `(tensors, l, r)`
-triples into a new, still-certified one:
+`mpu_generators.mixing` combines two unitary `(tensors, l, r)` triples (for
+example, outputs of the generators above) into a new unitary one:
 
 | Function | Construction | Requirements |
 |---|---|---|
-| `stack(mpu1, mpu2, seed=None)` | Operator composition $U_N := U_N^{(1)} \cdot U_N^{(2)}$, bond dimension $D_1 D_2$, no extra site — trivially unitary, no certification beyond the inputs' own | equal $d$, equal chain length |
-| `nest(sub_A, sub_l, sub_r, D_extra=2, seed=None, generator=None)` | Thin alias for `UniformMPUGenerator.invariant_subspace` | — |
-| `capped_sum(mpu1, mpu2, seed=None)` | One extra site prepended, carrying a row-resolution pair $\Pi_1,\Pi_2$ built from the same recipe Mode I uses internally: $U_{N+1}=\Pi_1\otimes U_N^{(1)}+\Pi_2\otimes U_N^{(2)}$, provably unitary for *any* two certified inputs | equal $d$, equal chain length; bond dimensions may differ |
+| `stack(mpu1, mpu2, seed=None)` | Operator composition $U_N := U_N^{(1)} \cdot U_N^{(2)}$, bond dimension $D_1 D_2$, no extra site — unitary because both factors are; no further check | equal $d$, equal chain length |
+| `nest(sub_A, sub_l, sub_r, D_extra=2, seed=None, generator=None)` | Thin alias for `UniformMPUGenerator.invariant_subspace`; with `seed=None` the embedding uses the generator's own seed (0 for a newly created generator) | — |
+| `capped_sum(mpu1, mpu2, seed=None)` | One extra site prepended, carrying a row-resolution pair $\Pi_1,\Pi_2$ built from the same recipe Mode I uses internally: $U_{N+1}=\Pi_1\otimes U_N^{(1)}+\Pi_2\otimes U_N^{(2)}$, unitary for *any* two unitary inputs by (RR) of the readout row (thesis `cor:mode1-readout`) | equal $d$, equal chain length; bond dimensions may differ |
 
 Deliberately **not** implemented: naive summing without the extra capped
 site ($l = l_1 + l_2$, no $\Pi$) — this fails unitarity in general (there
-is no reason for the $U^{(1)\dagger}U^{(2)}$ cross terms to cancel), and a
-regression test in `tests/` demonstrates the failure directly rather than
-leaving it as an unimplemented footnote.
+is no reason for the $U^{(1)\dagger}U^{(2)}$ cross terms to cancel); the test
+suite uses it as a negative control.
 
 ## Verification and certification
 
-Each mechanism's algebraic certificate is checked immediately after
-construction (gated by `verify=True`, the default):
+With `verify=True` (the default) each mechanism's algebraic certificate is
+checked immediately after construction, where a checker exists:
 
 - Mode I — `_check_row_resolution` / `_check_combined_readout_cascade`:
   completeness and cross-orthogonality per row/vertex.
 - Mode II — `_check_fusion_closure` (cyclic), `_check_nested_flag_closure`,
   `_check_matrix_unit_closure`, `_check_fusion_closure_general`
-  (group), plus `_check_flat_spectrum`/`_check_group_boundary` for the
-  boundary vector and `_check_channel_span_full_rank`/
+  (group), plus `_check_channel_span_full_rank`/
   `_check_group_representation` for the channel/representation structure
-  itself.
-- Mode II-B — `verify_intertwiner`: direct residual of the intertwiner
-  condition (null-complement and boundary-compatibility conditions of the
-  thesis are not checked).
+  itself. The boundary condition (B) is checked only for `cyclic`
+  (`_check_flat_spectrum`) and `group` (`_check_group_boundary`); the
+  `nested_flag` and `matrix_units` boundaries are built in closed form and
+  not checked.
+- Grafted — (RR) of the Mode I part, closure of the cyclic channels and the
+  flat-spectrum boundary.
+- Mode II-B — no algebraic certificate is checked. The helpers
+  `skeletons.solve_intertwiner` and `skeletons.verify_intertwiner` (residual
+  of the intertwiner condition for a given $V$) are standalone and are not
+  called at generation; the null-complement and boundary-compatibility
+  conditions of the thesis are not implemented.
 
 On top of that, every assembled chain goes through the numerical
 safeguards described in [Background](#background) (normalization, and the
-exact dense check for $d^N\le2^{10}$), regardless of which per-mechanism
-certificate was used to build the tensor. The test suite (`tests/test_mpu_generators.py`) mirrors this same
-two-layer structure and additionally builds fully dense $d^N \times d^N$
-matrices for direct $U^\dagger U = \mathbb{1}$ checks at small $N$, as an
-independent cross-check of the whole pipeline, not just of the
-certificate functions in isolation.
+dense check to tolerance for $d^N\le2^{10}$), regardless of which
+per-mechanism certificate, if any, was used to build the tensor. For Mode II-B
+these safeguards are the only unitarity check. The test suite
+(`tests/test_mpu_generators.py`) mirrors this same two-layer structure and
+additionally builds fully dense $d^N \times d^N$ matrices for direct
+$U^\dagger U = \mathbb{1}$ checks at small $N$, as an independent
+cross-check of the whole pipeline, not just of the certificate functions in
+isolation.
 
 ## Example: Mode II-B / Lee-Yang
 
@@ -348,7 +384,7 @@ This package imports from
 - `TreeMPU.utils.compute_chain_boundary_operators` — the normalization
   safeguard, and `TreeMPU.utils.satisfies_assumption_1` — the full-rank
   boundary check driving `blocking="auto"`.
-- `TreeMPU.checks.dense_unitary_from_tensors` — the exact dense check.
+- `TreeMPU.checks.dense_unitary_from_tensors` — the dense reference matrix.
 
 The dependency direction is one-way by design: this package imports from
 `TreeMPU`, never the reverse, so it can be split into its own
@@ -376,7 +412,7 @@ translationally-invariant-only mechanism (including two documented
 negative/edge-case results: `group_automaton`'s combined readout is *not*
 free, and `resonant`'s transfer matrix can be non-unitary while the chain
 itself stays exactly unitary), all three mixing combinators, and the
-explicit negative-control regression `test_naive_sum_without_capped_site_fails`.
+explicit negative control `test_naive_sum_without_capped_site_fails`.
 `tests/test_certificates_and_api.py` checks that every algebraic
 certificate rejects a perturbed input, the rectangular Lee-Yang
 intertwiner, the Lee-Yang boundary family, the family registry and

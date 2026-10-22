@@ -15,7 +15,7 @@ translation-invariant tensor).
 
 The naive sum :math:`\ell=\ell_1\oplus\ell_2` without the extra site is
 not unitary in general (the cross terms :math:`U^{(1)\dagger}U^{(2)}` do not
-cancel); the test suite contains this negative control.
+cancel); the test suite checks this as a negative control.
 """
 
 from __future__ import annotations
@@ -41,7 +41,15 @@ def stack(mpu1, mpu2, seed: int | None = None):
 
     Returns
     -------
-    tensors, l_vec, r_vec
+    tensors : list of ndarray
+        ``A[p_in, p_out, bond_L, bond_R]`` with bond dimension ``chi1 * chi2``.
+    l_vec, r_vec : ndarray
+        Kronecker products of the input boundary vectors (complex).
+
+    Raises
+    ------
+    ValueError
+        If the chains differ in length or in physical dimension.
     """
     tensors1, l1, r1 = mpu1
     tensors2, l2, r2 = mpu2
@@ -67,22 +75,34 @@ def stack(mpu1, mpu2, seed: int | None = None):
 
 
 def nest(sub_A, sub_l, sub_r, D_extra: int = 2, seed: int | None = None, generator=None):
-    r"""Alias of :meth:`~mpu_generators.uniform.UniformMPUGenerator.invariant_subspace`.
+    r"""Embed a translation-invariant MPU in a larger bond space.
+
+    Alias of
+    :meth:`~mpu_generators.uniform.UniformMPUGenerator.invariant_subspace`.
 
     Parameters
     ----------
     sub_A, sub_l, sub_r : ndarray
-        Translation-invariant MPU to embed.
+        Translation-invariant MPU to embed: bulk tensor
+        ``A[p_in, p_out, bond_L, bond_R]`` of bond dimension ``k`` and
+        boundary vectors of length ``k``.
     D_extra : int
         Additional bond dimension.
     seed : int, optional
-        Seed for the embedding.
+        Seed for the embedding. If None, the embedding uses the seed of the
+        generator (``generator.seed``; 0 for a newly created generator).
     generator : UniformMPUGenerator, optional
-        Existing generator to use (a new one is created otherwise).
+        Existing generator to use. If None, ``UniformMPUGenerator(seed=seed or 0)``
+        is created.
 
     Returns
     -------
-    A, l_vec, r_vec : ndarray
+    A : ndarray
+        Single bulk tensor ``A[p_in, p_out, bond_L, bond_R]`` of shape
+        ``(d, d, k + D_extra, k + D_extra)``.
+    l_vec, r_vec : ndarray
+        Boundary vectors of length ``k + D_extra``; see
+        :meth:`~mpu_generators.uniform.UniformMPUGenerator.invariant_subspace`.
     """
     from .uniform import UniformMPUGenerator
 
@@ -110,14 +130,25 @@ def capped_sum(mpu1, mpu2, seed: int | None = None):
 
     Returns
     -------
-    tensors, l_vec, r_vec
-        ``N + 1`` tensors, ``l_vec = (1)``.
+    tensors : list of ndarray
+        ``N + 1`` tensors ``A[p_in, p_out, bond_L, bond_R]``; the first has
+        bond shape ``(1, D1 + D2)``.
+    l_vec, r_vec : ndarray
+        ``l_vec = (1,)`` and ``r_vec`` the concatenation of the input ``r``.
+
+    Raises
+    ------
+    ValueError
+        If the chains differ in length or in physical dimension.
 
     Notes
     -----
-    The readout blocks are stored without the transpose used elsewhere, so the
-    site applies :math:`\Pi_i^\top`; the pair :math:`\{\Pi_i^\top\}` satisfies
-    (RR) as well (by the mirror identities), so unitarity is unaffected.
+    The readout blocks are stored without the transpose used elsewhere, so
+    the site applies :math:`\Pi_i^\top`; the pair :math:`\{\Pi_i^\top\}`
+    satisfies (RR) as well (by the mirror identities), so unitarity is
+    unaffected. Unitarity follows from (RR) for the readout row (thesis
+    ``cor:mode1-readout``) and is validated numerically by the tests; the
+    function itself does not run a unitarity check on the result.
     """
     tensors1, l1, r1 = mpu1
     tensors2, l2, r2 = mpu2

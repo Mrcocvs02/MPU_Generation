@@ -1,32 +1,84 @@
 # mpu_generators/base.py
-r"""Certified random generators of open-boundary Matrix Product Unitaries.
+r"""Random generators of open-boundary Matrix Product Unitaries (MPUs).
 
 Every generator returns site tensors ``A[p_in, p_out, bond_L, bond_R]`` and
-boundary vectors ``(l, r)`` such that the contraction
+boundary vectors ``(l, r)`` whose contraction
 
 .. math::
     U_N = \sum_{v_0,\dots,v_N} \ell_{v_0} r_{v_N}\,
           A[v_0,v_1]\otimes\cdots\otimes A[v_{N-1},v_N]
 
-is exactly unitary for every :math:`N`, certified by an algebraic identity of
-the local data (thesis, Ch. "Generating MPUs"; M. Vassallo, "Tensor-first
-sampling of exact matrix-product unitaries"):
+is unitary for every chain length :math:`N`. For Modes I and II and the
+grafted composition this follows from an algebraic identity of the local
+tensor and boundary data (thesis ``thm:mode1-unitarity``,
+``thm:mode2-unitarity``, ``thm:grafted-factorization``), not from tests at a
+few lengths. For Mode II-B no algebraic certificate is checked and unitarity
+is validated numerically only.
 
-* **Mode I (row resolution)** -- :meth:`MPUGenerator.branching`;
-* **Mode II (fusion closure)** -- :meth:`MPUGenerator.fusion` with the
-  cyclic, nested-flag, matrix-unit and group-convolution skeletons;
-* **Mode II-B (bond-resolved fusion)** -- :meth:`MPUGenerator.fusion_bond_resolved`;
-* **grafted composition** -- :meth:`MPUGenerator.grafted`.
+Constructions
+-------------
+* **Mode I (row resolution, RR)**: :meth:`MPUGenerator.branching`. Each row
+  of the bond digraph resolves the identity into mutually orthogonal
+  branches.
+* **Mode II (fusion closure, FC)**: :meth:`MPUGenerator.fusion`. A
+  bond-diagonal tensor whose channel matrices close under a fusion rule, with
+  a boundary vector (B) on the skeleton's admissible manifold. Skeletons:
+  ``cyclic``, ``nested_flag``, ``matrix_units`` and ``group`` (group
+  convolution; the group-boundary condition replaces the flat-spectrum one).
+* **Mode II-B (bond-resolved fusion)**: :meth:`MPUGenerator.fusion_bond_resolved`.
+  Fixed core tensors from a :class:`~mpu_generators.skeletons.FusionSkeleton`
+  with a resampled physical dressing.
+* **Grafted composition**: :meth:`MPUGenerator.grafted`. A Mode I two-vertex
+  path inside the channels of the cyclic Mode II skeleton.
+
+Certificates and checks
+-----------------------
+With ``verify=True`` the certificate of each mode is re-checked numerically,
+at an absolute Frobenius-norm tolerance of ``1e-9``, on every sampled tensor
+(once for the repeated tensor in the uniform case):
+
+* Mode I and the readout cascade: (RR) on every row.
+* ``cyclic``: (FC) and (B) (flat Fourier spectrum).
+* ``group``: the representation property of the irreps, (FC) and (B) (direct
+  double sum).
+* ``nested_flag``, ``matrix_units``: (FC) only. Their boundary vector is
+  constructed on the admissible manifold and (B) is not checked.
+* Grafted: (RR) for the Mode I factor, (FC) and (B) (flat spectrum) for the
+  channels.
+* Mode II-B: none; the intertwiner helpers of
+  :mod:`mpu_generators.skeletons` are not called at generation.
+
+Independently, every assembled chain passes the numerical safeguards of
+:func:`_finalize_chain` (:func:`_verify_chain` for Mode II-B): the
+normalization :math:`\operatorname{Tr}(U^\dagger U)/d^N=1` for any :math:`N`,
+and the dense condition :math:`U^\dagger U=1`, to tolerance, when
+:math:`d^N\le 2^{10}`.
 
 Conventions
 -----------
-Index order ``A[p_in, p_out, bond_L, bond_R]`` (as in :mod:`TreeMPU`).
-The physical block stored at ``A[:, :, v, u]`` is the *transpose* of the
-operator :math:`A[v,u]` (rows = output) used in the thesis. Boundary vectors
-are contracted without complex conjugation. The package depends on
-:mod:`TreeMPU` only for :func:`~TreeMPU.utils.block_mpu_tensors`,
-:func:`~TreeMPU.utils.compute_chain_boundary_operators` and the dense
-reference in :mod:`TreeMPU.checks`.
+Tensors are ``A[p_in, p_out, bond_L, bond_R]`` (first physical index = input,
+as in :mod:`TreeMPU`). The block stored at ``A[:, :, v, u]`` is the
+*transpose* of the operator :math:`A[v,u]` (rows = output) used in the thesis.
+Boundary vectors are contracted without complex conjugation. Sites are built
+in construction order and reversed by :func:`_finalize_chain`. The package
+depends on :mod:`TreeMPU` only for :func:`~TreeMPU.utils.block_mpu_tensors`,
+:func:`~TreeMPU.utils.compute_chain_boundary_operators`,
+:func:`~TreeMPU.utils.satisfies_assumption_1` and the dense reference in
+:mod:`TreeMPU.checks`.
+
+References
+----------
+[Styliaris et al., PRL 135, 260602]; M. Vassallo, master's thesis
+(``thm:mode1-unitarity``, ``thm:mode2-unitarity``,
+``thm:grafted-factorization``) and "Tensor-First Sampling of Exact
+Matrix-Product Unitaries" (in preparation).
+
+Examples
+--------
+>>> from mpu_generators import MPUGenerator
+>>> tensors, l_vec, r_vec = MPUGenerator(seed=0).branching(d=2, bond_dim=2, n_sites=6)
+>>> len(tensors), tensors[0].shape
+(6, (2, 2, 2, 2))
 """
 
 from __future__ import annotations
@@ -41,15 +93,13 @@ from TreeMPU.utils import (
 )
 from TreeMPU.utils import satisfies_assumption_1 as _satisfies_assumption_1
 
-#: Largest blocked tensor (d**L, d**L, D, D) complex128 that blocking may build.
-#: Every attempt costs memory exponential in L (d = 3, L = 8 is ~6 GB), so the
-#: size is checked before allocation, for explicit and automatic blocking.
+#: Largest blocked tensor (d**L, d**L, D, D) in complex128 that blocking may
+#: build (512 MiB). The cost grows exponentially in L, so the size is checked
+#: before allocation for explicit and automatic blocking.
 _AUTO_BLOCKING_MAX_BYTES = 512 * 1024 * 1024
 
 
-# =====================================================================
-# Haar sampling
-# =====================================================================
+# --- Haar sampling ---
 
 
 def _haar_unitary(dim: int, rng: np.random.Generator) -> np.ndarray:
@@ -59,6 +109,18 @@ def _haar_unitary(dim: int, rng: np.random.Generator) -> np.ndarray:
     of :math:`\mathrm{diag}(R)` absorbed into :math:`Q` so that the result is
     Haar distributed (Mezzadri, Notices AMS 54, 592 (2007)). Consumes exactly
     two ``standard_normal((dim, dim))`` draws from ``rng``.
+
+    Parameters
+    ----------
+    dim : int
+        Matrix size.
+    rng : numpy.random.Generator
+        Source of randomness.
+
+    Returns
+    -------
+    ndarray
+        Complex unitary of shape ``(dim, dim)``.
     """
     Z = rng.standard_normal((dim, dim)) + 1j * rng.standard_normal((dim, dim))
     Q, R = np.linalg.qr(Z)
@@ -67,9 +129,7 @@ def _haar_unitary(dim: int, rng: np.random.Generator) -> np.ndarray:
     return (Q * ph[None, :]).astype(complex)
 
 
-# =====================================================================
-# Mode I: branching (row resolution)
-# =====================================================================
+# --- Mode I: branching (row resolution) ---
 
 
 def _row_resolution_blocks(
@@ -85,12 +145,11 @@ def _row_resolution_blocks(
     (thesis ``thm:mode1-unitarity``; paper, "row-resolution identity" in
     the section on exact certification mechanisms).
 
-    Recipe: draw :math:`V, W` Haar in :math:`U(d)`, let :math:`P_i` be the
+    Sampler: draw :math:`V, W` Haar in :math:`U(d)`, let :math:`P_i` be the
     orthogonal projector onto the :math:`i`-th consecutive block of columns
-    of :math:`W` (block sizes ``ranks``; by default as equal as possible, so
-    the rank partition is balanced), and set :math:`A[v,u_i] = V P_i W^\dagger`.
-    Both halves of (RR) hold for every draw and every rank partition; no
-    rejection is needed.
+    of :math:`W` (block sizes ``ranks``; by default as equal as possible), and
+    set :math:`A[v,u_i] = V P_i W^\dagger`. Both halves of (RR) hold for every
+    draw and every rank partition, so no rejection is needed.
 
     Parameters
     ----------
@@ -110,13 +169,17 @@ def _row_resolution_blocks(
         ``{u_i: A[v, u_i]}`` as :math:`d\times d` matrices acting
         output <- input.
 
+    Raises
+    ------
+    ValueError
+        If the number of targets is not in ``1..d``, or ``ranks`` does not
+        consist of ``len(targets)`` positive integers summing to ``d``.
+
     Notes
     -----
-    The resolved subspaces are column blocks of :math:`W` and :math:`A` is
-    :math:`(VW)E_i(W^2)^\dagger` with coordinate projectors :math:`E_i`.
-    The joint law of the blocks is therefore not the unitarily invariant one
-    obtained from independent :math:`W_1 P_i W_2^\dagger`; both satisfy (RR),
-    and all numerical results of the thesis/paper refer to this sampler.
+    The same unitary :math:`W` supplies both the resolved subspaces and the
+    input frame, so the joint law of the blocks differs from the one obtained
+    with independent :math:`W_1 P_i W_2^\dagger`; both satisfy (RR).
     """
     m = len(targets)
     if not 1 <= m <= d:
@@ -146,7 +209,15 @@ def _check_row_resolution(A: np.ndarray, atol: float = 1e-9) -> None:
     ``A[:, :, v, u] = A_op[v, u].T``, so
     :math:`\sum_u A_{\rm op}^\dagger A_{\rm op} = (\sum_u B B^\dagger)^\top`
     with ``B = A[:, :, v, u]``; the residuals computed below are therefore
-    identical to those of (RR) itself.
+    those of (RR) itself. A row is populated if some block ``A[:, :, v, u]``
+    is nonzero; empty rows are skipped.
+
+    Parameters
+    ----------
+    A : ndarray
+        Tensor of shape ``(d, d, D, D)``.
+    atol : float
+        Absolute Frobenius-norm tolerance of each residual.
 
     Raises
     ------
@@ -203,13 +274,20 @@ def _mode1_site_tensor(
         Rank partition of every row: balanced (default), a uniformly random
         composition of ``d`` into ``len(edges[v])`` positive parts (drawn
         from ``rng`` just before the row's Haar unitaries), or explicit
-        ``{v: [rank of edge to edges[v][0], ...]}``.
+        ``{v: [rank of edge to edges[v][0], ...]}``. Not applied to
+        ``identity_rows``.
 
     Returns
     -------
     ndarray
         Shape ``(d, d, D, D)``; entry ``[:, :, v, u]`` stores the transposed
         operator :math:`A[v,u]^\top` (index order ``p_in, p_out``).
+
+    Raises
+    ------
+    ValueError
+        If an ``identity_rows`` vertex does not have exactly the single
+        target ``[v]``, or ``ranks`` is not one of the accepted forms.
     """
     A = np.zeros((d, d, D, D), dtype=complex)
     for v, targets in edges.items():
@@ -234,7 +312,25 @@ def _mode1_site_tensor(
 
 
 def _random_composition(n: int, k: int, rng: np.random.Generator) -> list[int]:
-    """Uniformly random composition of ``n`` into ``k`` positive parts (stars and bars)."""
+    """Return a uniformly random composition of ``n`` into ``k`` positive parts.
+
+    The ``k - 1`` cut points are chosen without replacement from ``1..n-1``
+    (stars and bars).
+
+    Parameters
+    ----------
+    n : int
+        Total to be split.
+    k : int
+        Number of parts, ``1 <= k <= n``.
+    rng : numpy.random.Generator
+        Consumes one ``choice`` draw if ``k > 1``, none otherwise.
+
+    Returns
+    -------
+    list of int
+        ``k`` positive integers summing to ``n``.
+    """
     cuts = np.sort(rng.choice(np.arange(1, n), size=k - 1, replace=False)) if k > 1 else []
     edges = [0, *(int(c) for c in cuts), n]
     return [edges[i + 1] - edges[i] for i in range(k)]
@@ -244,10 +340,30 @@ def _check_digraph(edges: dict[int, list[int]], D: int, d: int) -> dict[int, lis
     """Validate a user-supplied Mode I digraph and return a normalized copy.
 
     Every vertex ``0..D-1`` needs between 1 and ``d`` distinct targets in
-    ``0..D-1``: a row with no outgoing edge would break the telescoping in the
-    unitarity proof, and (RR) resolves at most ``d`` orthogonal branches.
-    Parallel edges are not allowed (two projectors on the same tensor entry
-    would add up to a single, non-projective block).
+    ``0..D-1``: a row without outgoing edge would break the telescoping sum
+    of the unitarity proof, and (RR) resolves at most ``d`` orthogonal
+    branches. Parallel edges are excluded because two projectors on the same
+    tensor entry would add to a single, non-projective block.
+
+    Parameters
+    ----------
+    edges : dict[int, list[int]]
+        ``{v: targets}`` as supplied by the user.
+    D : int
+        Number of vertices (bond dimension).
+    d : int
+        Physical dimension; the maximal out-degree.
+
+    Returns
+    -------
+    dict[int, list[int]]
+        ``{v: [targets]}`` with plain ``int`` entries.
+
+    Raises
+    ------
+    ValueError
+        If the vertex set is not ``0..D-1``, or a vertex violates the
+        out-degree or distinctness conditions.
     """
     if sorted(edges) != list(range(D)):
         raise ValueError(f"digraph must have exactly the vertices 0..{D - 1}; got {sorted(edges)}.")
@@ -263,7 +379,25 @@ def _check_digraph(edges: dict[int, list[int]], D: int, d: int) -> dict[int, lis
 
 
 def _check_ranks(ranks: dict[int, list[int]], edges: dict[int, list[int]], d: int) -> None:
-    """Validate an explicit rank partition against its digraph."""
+    """Validate an explicit rank partition against its digraph.
+
+    For every vertex ``v`` of ``edges``, ``ranks[v]`` must hold one positive
+    integer per target of ``v`` and sum to ``d``.
+
+    Parameters
+    ----------
+    ranks : dict[int, list[int]]
+        ``{v: [rank of the edge to edges[v][0], ...]}``.
+    edges : dict[int, list[int]]
+        Validated digraph ``{v: targets}`` (see :func:`_check_digraph`).
+    d : int
+        Physical dimension; the required sum of every row's ranks.
+
+    Raises
+    ------
+    ValueError
+        If an entry is missing or malformed.
+    """
     for v, targets in edges.items():
         if v not in ranks:
             raise ValueError(f"ranks has no entry for vertex {v}.")
@@ -277,14 +411,39 @@ def _check_ranks(ranks: dict[int, list[int]], edges: dict[int, list[int]], d: in
 def _random_out_regular_digraph(
     D: int, d: int, rng: np.random.Generator, out_degree: int | str | None = None
 ) -> dict[int, list[int]]:
-    """Random digraph on ``D`` vertices for Mode I.
+    """Return a random digraph ``{v: sorted targets}`` on ``D`` vertices.
 
-    Every vertex gets ``m = min(out_degree or d, d, D)`` distinct targets,
-    chosen uniformly without replacement (self-loops allowed). With
+    Every vertex gets ``m = min(int(out_degree), min(d, D))`` distinct
+    targets (``m = min(d, D)`` if ``out_degree`` is ``None``), chosen
+    uniformly without replacement (self-loops allowed). With
     ``out_degree="random"`` each vertex first draws its own ``m`` uniformly
     in ``1..min(d, D)``. The cap at ``d`` is forced by (RR): a row resolves
     at most ``d`` mutually orthogonal branches. Cycles are allowed; the
     Mode I certificate needs no acyclicity.
+
+    Parameters
+    ----------
+    D : int
+        Number of vertices.
+    d : int
+        Physical dimension.
+    rng : numpy.random.Generator
+        Consumed vertex by vertex (in the ``"random"`` case, one degree draw
+        before each target draw).
+    out_degree : int, "random" or None
+        Fixed out-degree (capped at ``min(d, D)``), ``"random"``, or ``None``
+        for the cap.
+
+    Returns
+    -------
+    dict[int, list[int]]
+        ``{v: sorted targets}`` with plain ``int`` entries.
+
+    Raises
+    ------
+    ValueError
+        If ``out_degree`` is an integer below 1 (``0`` does not default to
+        the cap).
     """
     cap = min(d, D)
     if out_degree == "random":
@@ -300,7 +459,24 @@ def _random_out_regular_digraph(
 
 
 def _even_split(items: list, k: int) -> list[list]:
-    """Partition ``items`` into ``k`` contiguous, size-balanced groups (order preserved)."""
+    """Split ``items`` into ``k`` contiguous groups whose sizes differ by at most 1.
+
+    The order of ``items`` is preserved; the first ``len(items) % k`` groups
+    are the larger ones.
+
+    Parameters
+    ----------
+    items : list
+        Sequence to split.
+    k : int
+        Number of groups, ``k >= 1``.
+
+    Returns
+    -------
+    list of list
+        ``k`` consecutive slices of ``items`` (some empty if
+        ``k > len(items)``).
+    """
     n = len(items)
     base, rem = divmod(n, k)
     sizes = [base + (1 if i < rem else 0) for i in range(k)]
@@ -313,26 +489,30 @@ def _even_split(items: list, k: int) -> list[list]:
 
 
 def _combined_readout_levels(readout: list[int], d: int) -> list[list[list[int]]]:
-    r"""
-    Group structure for combined readout over ``D_aux = len(readout)``
-    vertices at physical dimension ``d`` (thesis ``rem:cascaded-readout``,
-    ``D_aux > d`` case): a $d$-ary tree with ``D_aux`` leaves, built by repeatedly
-    splitting every group of size > 1 into up to ``d`` roughly-even
-    sub-groups; a group already at size 1 passes through unchanged (its
-    own trivial, still (RR)-satisfying, out-degree-1 row) rather than
-    being left to grow stale. Splitting always preserves the relative
-    order of elements across groups, so the final level's groups are
-    exactly ``[[readout[0]], [readout[1]], ..., [readout[-1]]]`` in the
-    original order -- no leaf is ever left unassigned or relabeled, so
-    unlike a naive fixed-depth ``d**m``-leaf tree, no padding-by-reusing-
-    a-label step is needed at all (see :func:`_combined_readout_sites`).
+    r"""Return the group hierarchy of a combined readout cascade.
 
-    Returns ``levels``, ``levels[0] == [list(readout)]`` (all of it,
-    unresolved) and ``levels[-1]`` all singletons; ``len(levels) - 1`` is
-    the number of extra physical sites the cascade needs
-    (``m = ceil(log_d(D_aux))``, forced to >= 1 even when ``D_aux == 1``
-    so the cascade still appends exactly one site in that case, matching
-    the ``D_aux <= d`` construction below at ``m = 1``).
+    Builds a :math:`d`-ary tree with ``len(readout)`` leaves (thesis
+    ``rem:cascaded-readout``, case :math:`D_{\rm aux}>d`): starting from the
+    single group ``list(readout)``, every group of size > 1 is split into up
+    to ``d`` contiguous, nearly equal subgroups, and a group of size 1 passes
+    through unchanged (its row is a trivial out-degree-1 (RR) row). Splitting
+    preserves the order of ``readout``, so the last level is exactly
+    ``[[readout[0]], ..., [readout[-1]]]`` and no leaf needs padding.
+
+    Parameters
+    ----------
+    readout : list of int
+        Vertices to be read out.
+    d : int
+        Physical dimension; the maximal fan-out of each split.
+
+    Returns
+    -------
+    list of list of list of int
+        ``levels`` with ``levels[0] == [list(readout)]`` and ``levels[-1]``
+        all singletons. ``len(levels) - 1`` is the number of extra physical
+        sites, :math:`\max(1,\lceil\log_d D_{\rm aux}\rceil)`; the minimum
+        of one site also covers ``len(readout) == 1``.
     """
     levels = [[list(readout)]]
     while len(levels) == 1 or any(len(g) > 1 for g in levels[-1]):
@@ -351,22 +531,34 @@ def _combined_readout_levels(readout: list[int], d: int) -> list[list[list[int]]
 def _combined_readout_sites(
     readout: list[int], d: int, bond_dim: int, rng: np.random.Generator
 ) -> list[np.ndarray]:
-    r"""Build the extra sites of a combined readout over ``readout`` (any ``D_aux``).
+    r"""Build the extra sites of a combined readout over ``readout``.
 
     Each level ``k -> k+1`` of :func:`_combined_readout_levels` becomes one
-    site: bond ``L`` = number of groups at level ``k``, bond ``R`` = number
-    of groups at level ``k + 1`` (or ``bond_dim`` at the last level, since
-    that is what must plug into the rest of the digraph chain -- the
-    populated columns are exactly ``readout``, everything else zero). Every row is an independent
-    (RR) row from :func:`_row_resolution_blocks`, so the cascade is
-    certified by the same Mode I theorem as the bulk chain.
+    site with ``bond_L`` = number of groups at level ``k`` and ``bond_R`` =
+    number of groups at level ``k + 1``. At the last level ``bond_R`` is
+    ``bond_dim``, to plug into the bulk chain; the populated columns are
+    exactly ``readout`` and all others vanish. Every row is an independent
+    (RR) row from :func:`_row_resolution_blocks`, so the cascade is certified
+    by the Mode I theorem like the bulk.
+
+    Parameters
+    ----------
+    readout : list of int
+        Vertices to be read out (valid indices of ``range(bond_dim)``).
+    d : int
+        Physical dimension.
+    bond_dim : int
+        Bond dimension of the bulk chain.
+    rng : numpy.random.Generator
+        Consumed level by level, row by row.
 
     Returns
     -------
     list of ndarray
-        Sites in level order; ``sites[0]`` has ``bond_L = 1`` (pairs with
-        :math:`\ell=(1)`). Callers append ``list(reversed(sites))`` because
-        :func:`_finalize_chain` reverses the whole list.
+        Sites ``(d, d, bond_L, bond_R)`` in level order; ``sites[0]`` has
+        ``bond_L = 1`` (pairs with :math:`\ell=(1)`). Callers append
+        ``list(reversed(sites))`` because :func:`_finalize_chain` reverses the
+        whole list.
     """
     levels = _combined_readout_levels(readout, d)
     m = len(levels) - 1
@@ -395,10 +587,23 @@ def _combined_readout_sites(
 
 
 def _check_combined_readout_cascade(sites: list[np.ndarray], atol: float = 1e-9) -> None:
-    """
-    Verify (RR) at every row of every combined-readout cascade site
-    (completeness + orthogonality), same row-isometry contraction pattern
-    as :func:`_check_row_resolution` for the ``p_in``-leading convention.
+    """Check (RR) on every row of every combined-readout cascade site.
+
+    Same completeness and cross-orthogonality residuals as
+    :func:`_check_row_resolution`, applied to each tensor of ``sites``
+    (shape ``(d, d, bond_L, bond_R)``, ``p_in`` first).
+
+    Parameters
+    ----------
+    sites : list of ndarray
+        Cascade tensors from :func:`_combined_readout_sites`.
+    atol : float
+        Absolute Frobenius-norm tolerance of each residual.
+
+    Raises
+    ------
+    RuntimeError
+        If a residual exceeds ``atol`` (Frobenius norm).
     """
     for A in sites:
         d, _, bond_L, bond_R = A.shape
@@ -424,23 +629,32 @@ def _check_combined_readout_cascade(sites: list[np.ndarray], atol: float = 1e-9)
                         )
 
 
-# =====================================================================
-# Mode II: fusion closure -- three named skeletons
-# =====================================================================
+# --- Mode II: fusion closure -- three named skeletons ---
 
 
 def _cyclic_character_channels(d: int, n_channels: int, rng: np.random.Generator) -> np.ndarray:
-    r"""Cyclic skeleton: :math:`y_g = W\,\mathrm{diag}(\omega^{0\cdot g},\dots,\omega^{(d-1)g})\,W^\dagger`.
+    r"""Build the cyclic skeleton of :math:`\mathbb Z_M` characters.
 
-    Here :math:`\omega=e^{2\pi i/M}`, :math:`M` = ``n_channels``,
+    The channels are
+    :math:`y_g = W\,\mathrm{diag}(\omega^{0\cdot g},\dots,\omega^{(d-1)g})\,W^\dagger`,
+    where :math:`\omega=e^{2\pi i/M}`, :math:`M` = ``n_channels``,
     :math:`g=0,\dots,M-1`, and :math:`W` is one Haar unitary. The channels
     form a unitary representation of :math:`\mathbb Z_M` and close
     monomially, :math:`y_u^\dagger y_v = y_{(v-u)\bmod M}`.
 
+    Parameters
+    ----------
+    d : int
+        Physical dimension.
+    n_channels : int
+        Number of channels :math:`M`.
+    rng : numpy.random.Generator
+        Consumes one Haar draw.
+
     Returns
     -------
     ndarray
-        Shape ``(n_channels, d, d)``.
+        Shape ``(n_channels, d, d)``, operators acting output <- input.
 
     Notes
     -----
@@ -461,19 +675,35 @@ def _cyclic_character_channels(d: int, n_channels: int, rng: np.random.Generator
     return np.stack([W @ np.diag(omega ** (ks * g)) @ W.conj().T for g in range(n_channels)])
 
 
-#: Backward-compatible alias (the function builds the cyclic skeleton).
+#: Alias of :func:`_cyclic_character_channels`.
 _group_convolution_channels = _cyclic_character_channels
 
 
 def _nested_flag_channels(d: int, n_channels: int, rng: np.random.Generator) -> np.ndarray:
-    r"""Nested-flag skeleton: :math:`y_a = P_a`, the projector onto the last :math:`d-a` columns of a Haar :math:`W`.
+    r"""Build the nested-flag skeleton of shrinking projectors.
 
-    :math:`a = 0,\dots,M-1` with :math:`M` = ``n_channels``, so :math:`y_0 = 1_d`
+    The channel :math:`y_a = P_a` projects onto the last :math:`d-a` columns
+    of a Haar unitary :math:`W`, for :math:`a = 0,\dots,M-1` with
+    :math:`M` = ``n_channels``. Hence :math:`y_0 = 1_d`
     and :math:`\operatorname{rank} y_a = d-a`. The flag is nested
     (:math:`P_{a}\ge P_{a+1}`) and closes monomially,
     :math:`y_u^\dagger y_v = y_{\max(u,v)}`. For :math:`d=2` with a fixed
     basis this is the MCZ / diagonal-phase mechanism (thesis
     ``sec:beyond-qca``).
+
+    Parameters
+    ----------
+    d : int
+        Physical dimension.
+    n_channels : int
+        Number of channels :math:`M`, at most ``d``.
+    rng : numpy.random.Generator
+        Consumes one Haar draw (after the size check).
+
+    Returns
+    -------
+    ndarray
+        Shape ``(n_channels, d, d)``.
 
     Raises
     ------
@@ -489,13 +719,24 @@ def _nested_flag_channels(d: int, n_channels: int, rng: np.random.Generator) -> 
 
 
 def _matrix_unit_labels(m: int) -> list[tuple[int, int] | None]:
-    r"""Channel labels of the matrix-units skeleton.
+    r"""Return the channel labels of the matrix-units skeleton.
 
     Index 0 is a separate identity channel (label ``None``), followed by the
-    :math:`m^2` matrix units :math:`(i,j)`, :math:`i,j=0,\dots,m-1`. The
-    separate identity channel is essential: with the identity written as
-    :math:`\sum_i y_{(i,i)}` instead, :math:`\sum_i y_{(i,i)}^{\otimes 2}\neq 1_d^{\otimes 2}`
-    and no boundary gives a unitary for :math:`N\ge 2`.
+    :math:`m^2` matrix units :math:`(i,j)`, :math:`i,j=0,\dots,m-1`, in
+    row-major order. The identity must be a channel of its own: if it were
+    represented as :math:`\sum_i y_{(i,i)}`, then
+    :math:`\sum_i y_{(i,i)}^{\otimes 2}\neq 1_d^{\otimes 2}` and no boundary
+    would give a unitary for :math:`N\ge 2`.
+
+    Parameters
+    ----------
+    m : int
+        Size of the matrix-unit basis, ``m >= 1``.
+
+    Returns
+    -------
+    list
+        ``1 + m**2`` labels: ``None`` followed by the pairs ``(i, j)``.
     """
     return [None] + [(i, j) for i in range(m) for j in range(m)]
 
@@ -503,15 +744,25 @@ def _matrix_unit_labels(m: int) -> list[tuple[int, int] | None]:
 def _matrix_unit_channels(
     d: int, m: int, rng: np.random.Generator
 ) -> tuple[np.ndarray, list[tuple[int, int] | None]]:
-    r"""Matrix-units channels: :math:`y_0=1_d` and :math:`y_{(i,j)} = w_i w_j^\dagger`.
+    r"""Build the matrix-units channels, :math:`y_{(i,j)}=w_iw_j^\dagger`.
 
-    :math:`w_i` are the first :math:`m` columns of one Haar :math:`W`. The
-    channels satisfy (FC), checked by :func:`_check_matrix_unit_closure`:
+    :math:`w_i` are the first :math:`m` columns of one Haar :math:`W` (one
+    Haar draw from ``rng``). The channels satisfy (FC), checked by
+    :func:`_check_matrix_unit_closure`:
 
     .. math::
         y_0^\dagger y_v = y_v, \quad y_u^\dagger y_0 = y_{(j,i)}
         \ (u=(i,j)), \quad y_0^\dagger y_0 = y_0, \quad
         y_{(i,j)}^\dagger y_{(k,l)} = \delta_{ik}\, y_{(j,l)}.
+
+    Parameters
+    ----------
+    d : int
+        Physical dimension.
+    m : int
+        Number of matrix-unit vectors, ``m <= d``.
+    rng : numpy.random.Generator
+        Consumes one Haar draw (after the size check).
 
     Returns
     -------
@@ -535,14 +786,28 @@ def _matrix_unit_channels(
 
 
 def _matrix_unit_boundary(m: int, rng: np.random.Generator) -> np.ndarray:
-    r"""Sample a boundary on the matrix-units admissible manifold.
+    r"""Sample a boundary vector on the matrix-units admissible manifold.
 
     With target :math:`e_0=1`, :math:`e_{(p,q)}=0` and
     :math:`\Lambda_{ij}:=\ell_{(i,j)}`, the boundary condition (B) reduces to
     :math:`\Lambda+\Lambda^\dagger+\Lambda^\dagger\Lambda=0`, i.e.
     :math:`V:=\Lambda+1_m` is unitary. The manifold is therefore
     :math:`\ell_0=1`, :math:`\ell_{(i,j)}=(V-1_m)_{ij}`, :math:`V\in U(m)`, and
-    :math:`V` is drawn from the Haar measure.
+    :math:`V` is drawn from the Haar measure. (B) holds by construction and is
+    not re-checked at generation.
+
+    Parameters
+    ----------
+    m : int
+        Size of the matrix-unit basis.
+    rng : numpy.random.Generator
+        Consumes one Haar draw of :math:`U(m)`.
+
+    Returns
+    -------
+    ndarray
+        Complex array of shape ``(1 + m**2,)`` in the order of
+        :func:`_matrix_unit_labels`.
     """
     labels = _matrix_unit_labels(m)
     V = _haar_unitary(m, rng)
@@ -556,11 +821,25 @@ def _matrix_unit_boundary(m: int, rng: np.random.Generator) -> np.ndarray:
 
 
 def _check_fusion_closure_general(y: np.ndarray, gamma: np.ndarray, atol: float = 1e-9) -> None:
-    r"""
-    Verify the general fusion closure condition (FC),
-    ``y[u]^dagger y[v] == sum_w gamma[w,u,v] y[w]``, for an arbitrary
-    (not necessarily cyclic) skeleton with structure constants ``gamma``
-    of shape ``(n_channels, n_channels, n_channels)`` (indexed ``[w, u, v]``).
+    r"""Check (FC) for a skeleton with general structure constants ``gamma``.
+
+    The condition is ``y[u]^dagger y[v] == sum_w gamma[w,u,v] y[w]`` for all
+    ``u, v``.
+
+    Parameters
+    ----------
+    y : ndarray
+        Channels, shape ``(n_channels, d, d)``.
+    gamma : ndarray
+        Structure constants, shape ``(n_channels, n_channels, n_channels)``,
+        indexed ``[w, u, v]``.
+    atol : float
+        Absolute Frobenius-norm tolerance.
+
+    Raises
+    ------
+    RuntimeError
+        If the identity fails for some ``(u, v)``.
     """
     n = y.shape[0]
     for u in range(n):
@@ -576,7 +855,20 @@ def _check_fusion_closure_general(y: np.ndarray, gamma: np.ndarray, atol: float 
 
 
 def _check_fusion_closure(y: np.ndarray, atol: float = 1e-9) -> None:
-    """Verify (FC) for the monomial cyclic skeleton: ``y[u]^dag y[v] == y[(v-u) mod M]``."""
+    """Check (FC) for the cyclic skeleton: ``y[u]^dag y[v] == y[(v-u) mod M]``.
+
+    Parameters
+    ----------
+    y : ndarray
+        Channels, shape ``(M, d, d)``.
+    atol : float
+        Absolute Frobenius-norm tolerance.
+
+    Raises
+    ------
+    RuntimeError
+        If the identity fails by more than ``atol`` (Frobenius norm).
+    """
     M = y.shape[0]
     for u in range(M):
         for v in range(M):
@@ -588,7 +880,20 @@ def _check_fusion_closure(y: np.ndarray, atol: float = 1e-9) -> None:
 
 
 def _check_nested_flag_closure(y: np.ndarray, atol: float = 1e-9) -> None:
-    """Verify (FC) for the nested-flag skeleton: ``y[u]^dag y[v] == y[max(u,v)]``."""
+    """Check (FC) for the nested-flag skeleton: ``y[u]^dag y[v] == y[max(u,v)]``.
+
+    Parameters
+    ----------
+    y : ndarray
+        Channels, shape ``(n_channels, d, d)``.
+    atol : float
+        Absolute Frobenius-norm tolerance.
+
+    Raises
+    ------
+    RuntimeError
+        If the identity fails by more than ``atol`` (Frobenius norm).
+    """
     n = y.shape[0]
     for u in range(n):
         for v in range(n):
@@ -603,15 +908,32 @@ def _check_nested_flag_closure(y: np.ndarray, atol: float = 1e-9) -> None:
 def _check_matrix_unit_closure(
     y: np.ndarray, labels: list[tuple[int, int] | None], atol: float = 1e-9
 ) -> None:
-    r"""
-    Verify (FC) for matrix units WITH the separate identity channel
-    (label ``None`` at index 0): ``y_0^dag y_v = y_v``,
-    ``y_u^dag y_0 = y_{(j,i)}`` (``u=(i,j)``), ``y_0^dag y_0 = y_0``, and
-    ``y_{(i,j)}^dag y_{(k,l)} = delta_ik y_{(j,l)}`` for the rest.
+    r"""Check (FC) for the matrix-units skeleton with identity channel.
+
+    The identity channel has label ``None`` at index 0. Verified for all
+    pairs: ``y_0^dag y_v = y_v``, ``y_u^dag y_0 = y_{(j,i)}`` for
+    ``u=(i,j)``, ``y_0^dag y_0 = y_0`` and
+    ``y_{(i,j)}^dag y_{(k,l)} = delta_ik y_{(j,l)}``.
+
+    Parameters
+    ----------
+    y : ndarray
+        Channels, shape ``(1 + m**2, d, d)``.
+    labels : list
+        Channel labels from :func:`_matrix_unit_labels`.
+    atol : float
+        Absolute Frobenius-norm tolerance.
+
+    Raises
+    ------
+    RuntimeError
+        If an identity fails by more than ``atol`` (Frobenius norm).
     """
     index = {lab: idx for idx, lab in enumerate(labels)}
 
     def expected(a_lab, b_lab):
+        # Index of the channel equal to y[a_lab]^dag y[b_lab], or None if the
+        # product vanishes.
         if a_lab is None and b_lab is None:
             return index[None]
         if a_lab is None:
@@ -636,10 +958,25 @@ def _check_matrix_unit_closure(
 
 
 def _check_channel_span_full_rank(y: np.ndarray, n_channels: int, tol: float = 1e-9) -> None:
-    """
-    Verify the ``n_channels`` sampled channels are linearly independent (as
-    vectors in ``M_d(C)``), i.e. that the caller-facing ``bond_dim`` will not
-    be silently reduced by MPU canonical form.
+    """Check that the ``n_channels`` channels are linearly independent in ``M_d(C)``.
+
+    Linear independence ensures that the requested bond dimension is not
+    reduced by the MPU canonical form.
+
+    Parameters
+    ----------
+    y : ndarray
+        Channels, shape ``(n_channels, d, d)``.
+    n_channels : int
+        Number of channels (first axis of ``y``).
+    tol : float
+        Singular-value tolerance passed to ``numpy.linalg.matrix_rank``.
+
+    Raises
+    ------
+    RuntimeError
+        If the rank of the flattened channels (tolerance ``tol``) is below
+        ``n_channels``.
     """
     flat = y.reshape(n_channels, -1)
     rank = int(np.linalg.matrix_rank(flat, tol=tol))
@@ -652,26 +989,51 @@ def _check_channel_span_full_rank(y: np.ndarray, n_channels: int, tol: float = 1
 
 
 def _flat_spectrum_boundary(n_channels: int, rng: np.random.Generator) -> np.ndarray:
-    r"""Sample a boundary for the cyclic skeleton: flat Fourier spectrum.
+    r"""Sample a boundary vector for the cyclic skeleton (flat Fourier spectrum).
 
     With :math:`\gamma^w_{uv}=\delta_{w,(v-u)\bmod M}` the boundary condition
     (B) is :math:`|\mathrm{DFT}(\ell)_k|=1` for all :math:`k`. Uniform random
     phases are drawn and inverse-transformed (uniform measure on the torus
     :math:`T^M`).
+
+    Parameters
+    ----------
+    n_channels : int
+        Number of channels :math:`M`.
+    rng : numpy.random.Generator
+        Consumes ``n_channels`` uniform draws.
+
+    Returns
+    -------
+    ndarray
+        Complex array of shape ``(n_channels,)``.
     """
     theta = rng.uniform(0.0, 2.0 * np.pi, size=n_channels)
     return np.fft.ifft(np.exp(1j * theta)).astype(complex)
 
 
 def _check_flat_spectrum(l_vec: np.ndarray, atol: float = 1e-9) -> None:
-    """Verify (B) for the cyclic skeleton: ``|DFT(l)[k]| = 1`` for every k."""
+    """Check (B) for the cyclic skeleton: ``|DFT(l)[k]| = 1`` for every ``k``.
+
+    Parameters
+    ----------
+    l_vec : ndarray
+        Boundary vector, shape ``(M,)``.
+    atol : float
+        Absolute tolerance on ``| |DFT(l)[k]| - 1 |``.
+
+    Raises
+    ------
+    RuntimeError
+        If the largest deviation exceeds ``atol``.
+    """
     err = float(np.max(np.abs(np.abs(np.fft.fft(l_vec)) - 1.0)))
     if err > atol:
         raise RuntimeError(f"(B) failed: max_k | |DFT(l)[k]| - 1 | = {err:.3e}")
 
 
 def _nested_flag_boundary(bond_dim: int, rng: np.random.Generator) -> np.ndarray:
-    r"""Sample a boundary on the nested-flag admissible manifold.
+    r"""Sample a boundary vector on the nested-flag admissible manifold.
 
     For the closure :math:`\gamma^{\max(u,v)}_{uv}=1` with target
     :math:`e_w=\delta_{w,0}`, the boundary condition (B) is triangular.
@@ -687,50 +1049,76 @@ def _nested_flag_boundary(bond_dim: int, rng: np.random.Generator) -> np.ndarray
     :math:`\ell_w=-S_w+e^{i\theta_w}`, :math:`\theta\in[0,2\pi)^{\chi-1}`;
     the angles are drawn uniformly. :math:`\theta_w=\arg S_w` gives the
     degenerate point :math:`\ell_w=0`; for :math:`\chi=2`, :math:`\theta=\pi`
-    gives the MCZ boundary :math:`\ell=(1,-2)`.
+    gives the MCZ boundary :math:`\ell=(1,-2)`. (B) holds by construction and
+    is not re-checked at generation.
+
+    Parameters
+    ----------
+    bond_dim : int
+        Number of channels :math:`\chi`.
+    rng : numpy.random.Generator
+        Consumes ``bond_dim - 1`` uniform angle draws.
+
+    Returns
+    -------
+    ndarray
+        Complex array of shape ``(bond_dim,)`` with ``l[0] = 1``.
     """
     l_vec = np.zeros(bond_dim, dtype=complex)
     l_vec[0] = 1.0 + 0.0j
     for w in range(1, bond_dim):
-        S_w = np.sum(l_vec[:w])  # |S_w| = 1 exactly (see docstring)
+        S_w = np.sum(l_vec[:w])  # |S_w| = 1 by the recursion in the docstring
         theta = rng.uniform(0.0, 2.0 * np.pi)
         l_vec[w] = -S_w + abs(S_w) * np.exp(1j * theta)
     return l_vec
 
 
 def _finite_group_table(group: str, n: int | list[int] = 0):
-    r"""Multiplication table and irreducible representations of a small finite group.
+    r"""Return the multiplication table and irreps of a small finite group.
 
-    ``group``:
-      - ``"Zn"``: cyclic group of order ``n`` (abelian). Irreps: the ``n``
-        one-dimensional characters $\rho_k(g) = \omega^{kg}$,
-        $\omega = e^{2\pi i/n}$ -- standard, works for any ``n``.
-      - ``"Zn_product"``: direct product $Z_{n_1} \times \cdots \times
-        Z_{n_k}$ (``n`` is a list of factor orders here, not a single
-        int) -- *any* finite abelian group, by the fundamental theorem of
-        finite abelian groups (every finite abelian group is a product of
-        cyclic factors). Irreps are the products of per-factor characters,
-        $\rho_{\vec k}(\vec g) = \prod_i \omega_i^{k_i g_i}$.
-      - ``"S3"``: the symmetric group on 3 letters (dihedral of order 6,
-        the smallest non-abelian group). ``n`` is ignored. Irreps: trivial
-        (1-dim), sign (1-dim, +1 on the identity/two 3-cycles, -1 on the
-        three transpositions), and the 2-dim "standard" representation
-        (S3 as the symmetries of a triangle: 3-cycles are rotations by
-        120 degrees, transpositions are reflections); the homomorphism
-        property is re-checked by :func:`_check_group_representation`.
+    Parameters
+    ----------
+    group : {"Zn", "Zn_product", "S3"}
+        ``"Zn"``: cyclic group of order ``n``, with the ``n`` characters
+        :math:`\rho_k(g)=\omega^{kg}`, :math:`\omega=e^{2\pi i/n}`.
+        ``"Zn_product"``: direct product :math:`Z_{n_1}\times\cdots\times
+        Z_{n_k}` of cyclic factors (any finite abelian group), with the
+        products of per-factor characters as irreps. ``"S3"``: symmetric group
+        on three letters; irreps are the trivial, the sign and the
+        two-dimensional standard representation (``n`` is ignored).
+    n : int or list of int
+        Order of ``Zn``, or list of factor orders for ``Zn_product``.
 
     Returns
     -------
-    tuple
-        ``(elements, mult, inv, identity, irreps)`` with ``irreps`` a list
-        of ``(dim, [rho(g) for g in elements])`` pairs.
+    elements : list
+        Group elements (ints, tuples of ints, or permutation tuples).
+    mult : callable
+        ``mult(g, h)`` returns the product ``g h``.
+    inv : callable
+        ``inv(g)`` returns the inverse.
+    identity
+        The neutral element.
+    irreps : list of tuple
+        ``(dim, [rho(g) for g in elements])`` for each irrep, with ``rho(g)``
+        a unitary ``(dim, dim)`` array.
+
+    Raises
+    ------
+    ValueError
+        If ``group`` is unknown, or ``n`` is invalid for the chosen group.
 
     Notes
     -----
     The tensor-first sampling paper states the group-convolution results for
     every finite group; this implementation provides the abelian groups and
-    :math:`S_3` only (general groups need their irreducible representations
-    as input).
+    :math:`S_3` only, because general groups need their irreducible
+    representations as input. The homomorphism property of every irrep is
+    checked by :func:`_check_group_representation`. For :math:`S_3`,
+    ``mult(g, h)`` is the composition ``g`` after ``h``; the standard
+    representation maps the 3-cycle ``r`` to a rotation by 120 degrees and the
+    transposition ``s`` to a reflection, with every element written as
+    :math:`r^k` or :math:`s\,r^k`.
     """
     if group == "Zn_product":
         factors = list(n)
@@ -747,6 +1135,7 @@ def _finite_group_table(group: str, n: int | list[int] = 0):
         for k_vec in product(*(range(f) for f in factors)):
 
             def rho_g(g, k_vec=k_vec):
+                """Return the 1x1 character ``prod_i omega_i**(k_i g_i)`` at ``g``."""
                 phase = 1.0 + 0.0j
                 for ki, gi, om in zip(k_vec, g, omegas):
                     phase *= om ** (ki * gi)
@@ -775,6 +1164,7 @@ def _finite_group_table(group: str, n: int | list[int] = 0):
         identity = (0, 1, 2)
 
         def _parity(perm):
+            """Return the sign of the permutation ``perm`` of ``range(3)``."""
             seen = [False] * 3
             sign = 1
             for i in range(3):
@@ -791,18 +1181,8 @@ def _finite_group_table(group: str, n: int | list[int] = 0):
         trivial = [np.array([[1.0]], dtype=complex) for _ in elements]
         sign = [np.array([[float(_parity(g))]], dtype=complex) for g in elements]
 
-        # Standard 2-dim irrep: realize S3 as the symmetries of a triangle.
-        # r = 3-cycle "rotate by 120 deg", s = a transposition "reflect".
-        # Every element is r^k or s.r^k for k=0,1,2 -- classify each
-        # element by that (rotation count, is-reflection) coordinate, then
-        # assign the corresponding rotation/reflection 2x2 matrix, M(g) =
-        # R^k or S @ R^k so that M is a genuine homomorphism,
-        # M(mult(g,h)) = M(g) @ M(h) -- mult(g,h) = g compose h here, so
-        # the element "s compose r^k" must be walked as mult(cur, r), not
-        # mult(r, cur) (composing r on the WRONG side silently relabels
-        # two of the three reflections against each other, since s.r^k =
-        # r^{-k}.s in a dihedral group -- caught by
-        # :func:`_check_group_representation`, not assumed correct).
+        # Classify each element as r^k or s r^k; s r^k is reached by multiplying
+        # r on the right, because s r^k = r^-k s in a dihedral group.
         r = (1, 2, 0)
         s = (1, 0, 2)
         coord = {}
@@ -834,7 +1214,27 @@ def _finite_group_table(group: str, n: int | list[int] = 0):
 
 
 def _check_group_representation(elements, mult, irreps, atol: float = 1e-9) -> None:
-    r"""Check that every irrep is unitary and a homomorphism, :math:`\rho(g)\rho(h)=\rho(gh)`."""
+    r"""Check that every irrep is unitary and a homomorphism.
+
+    The homomorphism condition is :math:`\rho(g)\rho(h)=\rho(gh)` for all
+    ``g, h``.
+
+    Parameters
+    ----------
+    elements : list
+        Group elements, as returned by :func:`_finite_group_table`.
+    mult : callable
+        Group multiplication.
+    irreps : list of tuple
+        ``(dim, [rho(g) for g in elements])`` pairs.
+    atol : float
+        Absolute Frobenius-norm tolerance.
+
+    Raises
+    ------
+    RuntimeError
+        If an irrep is not unitary or not a homomorphism.
+    """
     idx = {g: i for i, g in enumerate(elements)}
     for dim, rho in irreps:
         for gi, g in enumerate(elements):
@@ -858,12 +1258,24 @@ def _check_group_representation(elements, mult, irreps, atol: float = 1e-9) -> N
 
 
 def _group_regular_channels(elements, mult) -> np.ndarray:
-    r"""Group-convolution channels: the left-regular representation of :math:`G`.
+    r"""Build the channels of the left-regular representation of :math:`G`.
 
     Physical dimension :math:`d=|G|`, one channel per element,
     :math:`y_g|h\rangle=|gh\rangle`. Closure is monomial for every finite
     group, :math:`y_g^\dagger y_h = y_{g^{-1}h}` (structure constants from
     :func:`_group_fusion_gamma`).
+
+    Parameters
+    ----------
+    elements : list
+        Group elements, as returned by :func:`_finite_group_table`.
+    mult : callable
+        ``mult(g, h)`` returns the product ``g h``.
+
+    Returns
+    -------
+    ndarray
+        Shape ``(|G|, |G|, |G|)``, operators acting output <- input.
     """
     D = len(elements)
     idx = {g: i for i, g in enumerate(elements)}
@@ -875,7 +1287,25 @@ def _group_regular_channels(elements, mult) -> np.ndarray:
 
 
 def _group_fusion_gamma(elements, mult, inv) -> np.ndarray:
-    """Structure constants for :func:`_group_regular_channels`: ``gamma^w_{uv} = delta_{w, g_u^{-1} g_v}``."""
+    r"""Return the structure constants of :func:`_group_regular_channels`.
+
+    The array ``gamma[w, u, v]`` of shape ``(|G|, |G|, |G|)`` equals
+    :math:`\delta_{w, g_u^{-1} g_v}`.
+
+    Parameters
+    ----------
+    elements : list
+        Group elements, as returned by :func:`_finite_group_table`.
+    mult : callable
+        ``mult(g, h)`` returns the product ``g h``.
+    inv : callable
+        ``inv(g)`` returns the inverse.
+
+    Returns
+    -------
+    ndarray
+        Real array ``gamma[w, u, v]``.
+    """
     D = len(elements)
     idx = {g: i for i, g in enumerate(elements)}
     gamma = np.zeros((D, D, D))
@@ -887,7 +1317,7 @@ def _group_fusion_gamma(elements, mult, inv) -> np.ndarray:
 
 
 def _group_fourier_boundary(elements, irreps, rng: np.random.Generator) -> np.ndarray:
-    r"""Sample a boundary on the group-convolution (Peter-Weyl) admissible manifold.
+    r"""Sample a boundary vector on the Peter-Weyl admissible manifold.
 
     For a finite group, every function $f:G\to\mathbb C$ has a Fourier
     transform at each irrep $\rho$, $\hat f(\rho) = \sum_g f(g)\rho(g)$,
@@ -901,8 +1331,22 @@ def _group_fourier_boundary(elements, irreps, rng: np.random.Generator) -> np.nd
     1x1 characters to $d_\rho\times d_\rho$ blocks). The manifold is
     $\prod_\rho U(d_\rho)$ (paper, Peter-Weyl ensemble); one Haar unitary
     $U_\rho$ is drawn per irrep, in the order of ``irreps``, and transformed
-    back. The result is re-checked by the direct double sum in
-    :func:`_check_group_boundary`.
+    back. With ``verify=True`` the result is re-checked by the direct double
+    sum in :func:`_check_group_boundary`.
+
+    Parameters
+    ----------
+    elements : list
+        Group elements, as returned by :func:`_finite_group_table`.
+    irreps : list of tuple
+        ``(dim, [rho(g) for g in elements])`` for each irrep.
+    rng : numpy.random.Generator
+        Consumes one Haar draw per irrep.
+
+    Returns
+    -------
+    ndarray
+        Complex array of shape ``(|G|,)``.
     """
     G = len(elements)
     Us = [_haar_unitary(dim, rng) for dim, _ in irreps]
@@ -918,7 +1362,31 @@ def _group_fourier_boundary(elements, irreps, rng: np.random.Generator) -> np.nd
 def _check_group_boundary(
     l_vec: np.ndarray, elements, mult, idx, identity, atol: float = 1e-9
 ) -> None:
-    """Brute-force (not Fourier-based) check of (B): ``sum_g conj(l(g)) l(gw) == delta_{w,identity}`` for every w."""
+    """Check (B) by the direct double sum, independent of the Fourier construction.
+
+    Verifies ``sum_g conj(l(g)) l(gw) == delta_{w,identity}`` for every ``w``;
+    ``idx`` maps elements to their positions in ``elements``.
+
+    Parameters
+    ----------
+    l_vec : ndarray
+        Boundary vector, shape ``(|G|,)``.
+    elements : list
+        Group elements, as returned by :func:`_finite_group_table`.
+    mult : callable
+        ``mult(g, h)`` returns the product ``g h``.
+    idx : dict
+        Position of each element in ``elements``.
+    identity
+        The neutral element.
+    atol : float
+        Absolute tolerance on ``|S(w) - delta_{w,identity}|``.
+
+    Raises
+    ------
+    RuntimeError
+        If the identity fails for some ``w`` by more than ``atol``.
+    """
     for wi, w in enumerate(elements):
         target = 1.0 if w == identity else 0.0
         S = 0.0 + 0.0j
@@ -929,9 +1397,7 @@ def _check_group_boundary(
             raise RuntimeError(f"(B) failed [group] at w={w}: |S(w) - target| = {err:.3e}")
 
 
-# =====================================================================
-# Common tail: site-order reversal, blocking, chain verification
-# =====================================================================
+# --- Common tail: site-order reversal, blocking, chain verification ---
 
 
 def _finalize_chain(
@@ -941,13 +1407,11 @@ def _finalize_chain(
     blocking: int,
     verify: bool,
 ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
-    r"""Order, block and (optionally) sanity-check a freshly built chain.
+    r"""Reverse, block and (optionally) verify a freshly built chain.
 
-    Every ``build_sites`` builder appends sites in construction order, which
-    is the *reverse* of the physical left-to-right order of the chain
-    (the thesis writes the product as :math:`\ell A_N \cdots A_1 r`); the
-    list is reversed here, then grouped into blocks of ``blocking`` sites.
-    Sites are already in the package convention
+    Builders append sites in construction order, which is the reverse of the
+    physical order; the list is reversed here and then grouped into blocks of
+    ``blocking`` consecutive sites. Sites are already in the convention
     ``A[p_in, p_out, bond_L, bond_R]``.
 
     Parameters
@@ -957,24 +1421,39 @@ def _finalize_chain(
     l_vec, r_vec : ndarray
         Boundary vectors (copied, never modified in place).
     blocking : int
-        Number of physical sites merged into one tensor.
+        Number of physical sites merged into one tensor; must divide
+        ``len(sites)``.
     verify : bool
-        Run the numerical checks described below.
+        Run :func:`_verify_chain`.
+
+    Returns
+    -------
+    tensors : list of ndarray
+        Blocked tensors in physical left-to-right order.
+    l_vec, r_vec : ndarray
+        Copies of the boundary vectors.
+
+    Raises
+    ------
+    ValueError
+        If ``blocking < 1`` or does not divide ``len(sites)``
+        (from :func:`~TreeMPU.utils.block_mpu_tensors`).
+    RuntimeError
+        If ``verify`` is true and a safeguard of :func:`_verify_chain` fails.
 
     Notes
     -----
-    Exact unitarity for every :math:`N` is guaranteed by the algebraic
-    certificate each mode checks when its site tensor is built
-    (row resolution, fusion closure, group-boundary condition). The checks
-    run here are independent, *numerical* safeguards against implementation
-    errors:
+    The unitarity of the chain for every :math:`N` follows from the algebraic
+    certificate of the mode (thesis theorems; see the module docstring), which
+    each mode re-checks numerically when its site tensor is built, where a
+    check exists. The checks run here are independent *numerical* safeguards
+    against implementation errors:
 
     * the normalization :math:`\operatorname{Tr}(U^\dagger U)/d^N = 1`
-      (one left sweep, any :math:`N`; necessary but not sufficient for
+      (one sweep, any :math:`N`; necessary but not sufficient for
       unitarity);
-    * when :math:`d^N \le` ``_DENSE_VERIFY_MAX_DIM``, the exact condition
-      :math:`\|U^\dagger U - I\|_F \le 10^{-8}\sqrt{d^N}` on the dense
-      matrix.
+    * when :math:`d^N \le` ``_DENSE_VERIFY_MAX_DIM``, the dense condition
+      :math:`\|U^\dagger U - I\|_F \le 10^{-8}\sqrt{d^N}`.
     """
     tensors = block_mpu_tensors(list(reversed(sites)), blocking)
     l_vec = l_vec.copy()
@@ -992,7 +1471,14 @@ _DENSE_VERIFY_MAX_DIM = 2**10
 
 
 def _verify_chain(tensors: list[np.ndarray], l_vec: np.ndarray, r_vec: np.ndarray) -> None:
-    """Numerical safeguards run by ``verify=True`` (see :func:`_finalize_chain`).
+    """Check normalization and, for small ``d**N``, dense unitarity of a chain.
+
+    Parameters
+    ----------
+    tensors : list of ndarray
+        Blocked site tensors ``A[p_in, p_out, bond_L, bond_R]``.
+    l_vec, r_vec : ndarray
+        Boundary vectors matching the outer bonds.
 
     Raises
     ------
@@ -1007,7 +1493,7 @@ def _verify_chain(tensors: list[np.ndarray], l_vec: np.ndarray, r_vec: np.ndarra
             f"Generated MPU is not unitary: normalization Tr(U^dag U)/d^N = {residual} "
             f"deviates from 1 by {err:.3e}."
         )
-    # Dense check; the dimension is computed from the shapes before any contraction.
+    # The dimension is computed from the shapes so that no large tensor is built.
     dim = 1
     for A in tensors:
         dim *= A.shape[0]
@@ -1024,19 +1510,50 @@ def _verify_chain(tensors: list[np.ndarray], l_vec: np.ndarray, r_vec: np.ndarra
 
 
 def _run_blocking(one_blocking, d, bond_dim, n_sites, n_blocks, blocking, max_blocking):
-    """Call ``one_blocking(n_sites_total, L)`` for a fixed or automatic block size ``L``.
+    """Build a chain with a fixed or automatically chosen block size ``L``.
 
-    With ``blocking="auto"``, block sizes ``L = 1, ..., max_blocking`` are
-    tried in order and the first chain satisfying Assumption 1 is returned.
-    The size of the blocked tensor, ``(d**L)**2 * bond_dim**2`` complex
-    numbers, is checked *before* it is built; the search stops at the first
-    ``L`` above ``_AUTO_BLOCKING_MAX_BYTES``; an explicit ``blocking=L`` above
-    the cap raises ``ValueError``.
+    ``one_blocking(sites_L, L)`` must return ``(tensors, l_vec, r_vec)`` for
+    ``sites_L`` physical sites blocked by ``L``; ``sites_L`` is
+    ``n_blocks * L`` or ``n_sites``. With ``blocking="auto"``, sizes
+    ``L = 1, ..., max_blocking`` are tried in order and the first chain that
+    satisfies Assumption 1 is returned; sizes ``L`` that do not divide
+    ``n_sites`` are skipped. The size of the blocked tensor,
+    ``(d**L)**2 * bond_dim**2`` complex numbers, is checked *before* it is
+    built; the search stops at the first ``L`` above
+    ``_AUTO_BLOCKING_MAX_BYTES``, and an explicit ``blocking=L`` above the cap
+    raises.
+
+    Parameters
+    ----------
+    one_blocking : callable
+        ``one_blocking(sites_L, L) -> (tensors, l_vec, r_vec)``; builds,
+        blocks and (optionally) verifies the chain of ``sites_L`` physical
+        sites with block size ``L``. It raises ``ValueError`` for an
+        inadmissible ``(sites_L, L)``.
+    d : int
+        Physical dimension.
+    bond_dim : int
+        Bond dimension (used for the size estimate).
+    n_sites : int or None
+        Number of physical sites; ``None`` if ``n_blocks`` is given.
+    n_blocks : int or None
+        Number of blocked tensors; ``None`` if ``n_sites`` is given.
+    blocking : int or "auto"
+        Block size, or ``"auto"`` for the search described above.
+    max_blocking : int
+        Largest ``L`` tried by ``"auto"``.
+
+    Returns
+    -------
+    tuple
+        ``(tensors, l_vec, r_vec)`` as returned by ``one_blocking``.
 
     Raises
     ------
     ValueError
-        If no admissible ``L`` gives a chain satisfying Assumption 1.
+        For ``"auto"``, if no admissible ``L`` gives a chain satisfying
+        Assumption 1; for an explicit ``blocking``, if the blocked tensor
+        exceeds the size cap (errors of ``one_blocking`` also propagate).
     """
     if blocking == "auto":
         attempts = []
@@ -1075,48 +1592,59 @@ def _run_blocking(one_blocking, d, bond_dim, n_sites, n_blocks, blocking, max_bl
     return one_blocking(sites_L, L)
 
 
-# =====================================================================
-# MPUGenerator
-# =====================================================================
+# --- MPUGenerator ---
 
 
 class MPUGenerator:
     r"""Certified random generator of open-boundary MPUs (site-dependent).
 
-    Every method returns ``(tensors, l_vec, r_vec)``: a list of site tensors
-    ``A[p_in, p_out, bond_L, bond_R]`` and two boundary vectors, such that
+    Every generation method returns ``(tensors, l_vec, r_vec)``: a list of
+    site tensors ``A[p_in, p_out, bond_L, bond_R]`` and two boundary vectors
+    such that
 
     .. math::
         U_N = \sum_{v_0,\dots,v_N} \ell_{v_0} r_{v_N}\,
               A[v_0,v_1]\otimes\cdots\otimes A[v_{N-1},v_N]
 
-    is exactly unitary for every :math:`N`. The certificate is an algebraic
-    identity of the local data checked when each tensor is built (row
-    resolution for Mode I, fusion closure plus an admissible boundary for
-    Mode II), not a finite-:math:`N` test.
+    is unitary for every :math:`N` (Modes I, II and grafted: proved from the
+    local certificate; Mode II-B: validated numerically, see
+    :meth:`fusion_bond_resolved`). The certificate is an algebraic identity of
+    the local data (row resolution for Mode I, fusion closure plus an
+    admissible boundary for Mode II), not a finite-:math:`N` test. With
+    ``verify=True`` it is re-checked numerically where a check exists (see the
+    module docstring).
 
     In this class every site draws its own Haar dressing;
-    :class:`~mpu_generators.uniform.UniformMPUGenerator` reuses one site
-    tensor at every site (translation invariance) and is otherwise
+    :class:`~mpu_generators.uniform.UniformMPUGenerator` draws one site tensor
+    and reuses it at every site (translation invariance), and is otherwise
     identical.
 
     Parameters
     ----------
     seed : int
-        Seed of the ``numpy.random.default_rng`` created at every call.
-        Calling the same method twice with the same arguments returns the
-        same MPU.
+        Seed of the ``numpy.random.default_rng`` created at every call, so
+        calling a method twice with the same arguments returns the same MPU.
     verify : bool
-        Run the algebraic checks at construction time, plus the numerical
-        safeguards of :func:`_finalize_chain` on the assembled chain.
+        Re-check the algebraic certificate of the mode numerically at
+        construction time (where a check exists, see the module docstring), and
+        run the numerical safeguards of :func:`_finalize_chain` on the
+        assembled chain.
     coherent_in_n : bool
         ``True`` (default): one random family for all chain lengths. The
         generator is seeded with ``seed`` alone, so for uniform generators the
         site tensor does not depend on ``n_sites``, and resampled chains of
-        different lengths share their draws (the ensembles of the tensor-first
-        sampling paper rely on this). ``False``: an independent draw for every
-        chain length, seeded with ``(seed, n_sites)`` (``n_sites`` counts
-        physical sites before blocking).
+        different lengths share their draws. ``False``: an independent draw
+        for every chain length, seeded with ``(seed, n_sites)`` where
+        ``n_sites`` counts physical sites before blocking.
+
+    Attributes
+    ----------
+    seed : int
+        As given.
+    verify : bool
+        As given.
+    coherent_in_n : bool
+        As given.
 
     Notes
     -----
@@ -1124,13 +1652,20 @@ class MPUGenerator:
     (:func:`_finalize_chain`). With per-site resampling, physical site
     :math:`j` of an :math:`N`-site chain therefore carries the
     :math:`(N-1-j)`-th draw: the chains for increasing :math:`N` extend a
-    common sequence at the *left* end. For Mode I with ``readout``, the
-    readout sites are drawn after the bulk sites, so they depend on
-    :math:`N` in the resampled case.
+    common sequence at the *left* end (Mode II-B: at the right end). For
+    Mode I with ``readout``, the readout sites are drawn after the bulk
+    sites, so they depend on :math:`N` in the resampled case.
+
+    Examples
+    --------
+    >>> gen = MPUGenerator(seed=0)
+    >>> tensors, l_vec, r_vec = gen.fusion(d=3, bond_dim=3, n_blocks=3)
+    >>> len(tensors), tensors[0].shape
+    (3, (3, 3, 3, 3))
     """
 
-    #: ``False`` in :class:`UniformMPUGenerator`: draw one site tensor and reuse
-    #: it at every site (translation invariance).
+    #: ``False`` in :class:`UniformMPUGenerator`: one site tensor is drawn and
+    #: reused at every site (translation invariance).
     _resample: bool = True
 
     def __init__(self, seed: int = 0, verify: bool = True, coherent_in_n: bool = True):
@@ -1139,20 +1674,51 @@ class MPUGenerator:
         self.coherent_in_n = coherent_in_n
 
     def _rng(self, n_sites_total: int) -> np.random.Generator:
-        """Generator for one chain of ``n_sites_total`` physical sites."""
+        """Return the random generator for one chain.
+
+        Parameters
+        ----------
+        n_sites_total : int
+            Number of physical sites before blocking (only used if
+            ``coherent_in_n`` is false).
+
+        Returns
+        -------
+        numpy.random.Generator
+            Seeded with ``seed``, or ``(seed, n_sites_total)`` if
+            ``coherent_in_n`` is false.
+        """
         if self.coherent_in_n:
             return np.random.default_rng(self.seed)
         return np.random.default_rng([self.seed, n_sites_total])
 
     def _sites(self, make_site, n_sites: int, rng: np.random.Generator) -> list[np.ndarray]:
+        """Return ``n_sites`` site tensors from ``make_site(rng)``.
+
+        One call per site if ``_resample`` is true; otherwise one call whose
+        result is repeated (the same array object at every position).
+
+        Parameters
+        ----------
+        make_site : callable
+            ``make_site(rng) -> ndarray``, one site tensor
+            ``A[p_in, p_out, bond_L, bond_R]``.
+        n_sites : int
+            Number of sites.
+        rng : numpy.random.Generator
+            Passed to ``make_site``.
+
+        Returns
+        -------
+        list of ndarray
+            ``n_sites`` site tensors in construction order.
+        """
         if self._resample:
             return [make_site(rng) for _ in range(n_sites)]
         site = make_site(rng)
         return [site] * n_sites
 
-    # -----------------------------------------------------------------
-    # Blocking / auto-blocking driver (mode-agnostic)
-    # -----------------------------------------------------------------
+    # --- Blocking / auto-blocking driver (mode-agnostic) ---
 
     def _generate(
         self,
@@ -1169,9 +1735,44 @@ class MPUGenerator:
         ``build_sites(n_sites_total, rng)`` returns ``(sites, l_vec, r_vec)``
         in construction order. With ``blocking="auto"`` the smallest block
         size ``L <= max_blocking`` whose blocked chain satisfies Assumption 1
-        (full-rank boundary operators at every cut, required by the TreeMPU
-        decomposition) is returned. The projected size of each blocked tensor
-        is checked *before* it is built (``_AUTO_BLOCKING_MAX_BYTES``).
+        (full-rank boundary operators at every cut, required by
+        ``TreeMPU.GeneralMPU(canonicalize=False)``) is returned. The projected
+        size of each blocked tensor is checked *before* it is built
+        (``_AUTO_BLOCKING_MAX_BYTES``).
+
+        Parameters
+        ----------
+        d, bond_dim : int
+            Physical and bond dimension.
+        n_sites, n_blocks : int or None
+            Give exactly one: number of physical sites, or number of blocked
+            tensors.
+        blocking : int or "auto"
+            Block size, or ``"auto"`` for the search.
+        max_blocking : int
+            Largest block size tried by ``"auto"``.
+        build_sites : callable
+            ``build_sites(n_sites_total, rng) -> (sites, l_vec, r_vec)``:
+            ``n_sites_total`` is the number of physical sites handed to the
+            blocking step, ``rng`` comes from :meth:`_rng`, ``sites`` are in
+            construction order (:func:`_finalize_chain` reverses them) and
+            ``l_vec, r_vec`` are the boundary vectors.
+
+        Returns
+        -------
+        tensors : list of ndarray
+            Blocked site tensors.
+        l_vec, r_vec : ndarray
+            Boundary vectors.
+
+        Raises
+        ------
+        ValueError
+            If not exactly one of ``n_sites`` and ``n_blocks`` is given, if
+            ``d < 2``, ``bond_dim < 1`` or ``n_blocks < 2``, if the chain has
+            fewer than two blocked tensors or ``blocking`` does not divide the
+            number of sites, or if the blocking search fails (see
+            :func:`_run_blocking`).
         """
         if (n_sites is None) == (n_blocks is None):
             raise ValueError("Give exactly one of n_sites or n_blocks.")
@@ -1183,6 +1784,7 @@ class MPUGenerator:
             raise ValueError(f"n_blocks must be >= 2, got {n_blocks}.")
 
         def _one_blocking(sites_L: int, L: int):
+            """Validate ``(sites_L, L)``, then build and finalize one chain."""
             if sites_L < 2:
                 raise ValueError(f"n_sites must be >= 2, got {sites_L}.")
             if sites_L % L:
@@ -1198,9 +1800,7 @@ class MPUGenerator:
 
         return _run_blocking(_one_blocking, d, bond_dim, n_sites, n_blocks, blocking, max_blocking)
 
-    # -----------------------------------------------------------------
-    # Mode I: branching
-    # -----------------------------------------------------------------
+    # --- Mode I: branching ---
 
     def branching(
         self,
@@ -1215,63 +1815,97 @@ class MPUGenerator:
         out_degree: int | str | None = None,
         ranks: str | dict[int, list[int]] = "balanced",
     ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
-        r"""Mode I (row resolution): a digraph with Haar-resolved rows.
+        r"""Sample a Mode I (row resolution) MPU on a Haar-resolved digraph.
 
         The virtual bond indexes the ``bond_dim`` vertices of a digraph (by
-        default random and out-regular, out-degree ``min(d, bond_dim)``, with
-        a balanced rank partition); every row of every site satisfies (RR)
-        (:func:`_row_resolution_blocks`). With single-vertex readout
-        :math:`\ell=e_0`, :math:`r=(1,\dots,1)` the chain is unitary for every
-        :math:`N` (thesis ``thm:mode1-unitarity``; paper ``thm:main1``).
+        default random and out-regular with out-degree ``min(d, bond_dim)``
+        and a balanced rank partition); every row of every site satisfies
+        (RR) (:func:`_row_resolution_blocks`). With single-vertex readout,
+        :math:`\ell=e_0` and :math:`r=(1,\dots,1)`, the chain is unitary for
+        every :math:`N` (thesis ``thm:mode1-unitarity``); combined readout is
+        covered by ``cor:mode1-readout``.
 
         Parameters
         ----------
         d : int
-            Local physical dimension.
+            Local physical dimension, at least 2.
         bond_dim : int
-            Bond dimension :math:`\chi` (number of digraph vertices).
+            Bond dimension :math:`\chi`, the number of digraph vertices.
         n_sites, n_blocks : int, optional
-            Give exactly one: total physical sites, or number of tensors
-            after blocking.
+            Give exactly one: total number of physical sites, or number of
+            tensors after blocking (then ``n_blocks * blocking`` sites). At
+            least two tensors are required.
         blocking : int or "auto"
-            Physical sites per returned tensor (see :meth:`_generate`).
+            Physical sites merged into each returned tensor. ``"auto"`` picks
+            the smallest size satisfying Assumption 1 (see :meth:`_generate`).
+            With ``readout``, ``blocking`` must divide ``m`` (see below).
         max_blocking : int
             Largest block size tried by ``blocking="auto"``.
         readout : list of int, optional
-            Combined readout over the vertex set ``readout``
-            (thesis ``cor:mode1-readout``, ``rem:cascaded-readout``): appends
-            :math:`m=\max(1,\lceil\log_d D_{\rm aux}\rceil)` extra sites, a
-            :math:`d`-ary tree of (RR) rows that resolves every listed vertex
-            exactly (:func:`_combined_readout_sites`); then :math:`\ell=(1)`.
+            Combined readout over the vertices in ``readout`` (thesis
+            ``cor:mode1-readout``, ``rem:cascaded-readout``). Appends
+            :math:`m=\max(1,\lceil\log_d |\mathrm{readout}|\rceil)` sites to
+            the chain, a :math:`d`-ary tree of (RR) rows that resolves every
+            listed vertex (:func:`_combined_readout_sites`), and
+            :math:`\ell=(1)`. These sites come in addition to ``n_sites`` and
+            are blocked with the rest. ``blocking`` must therefore divide both
+            ``n_sites`` and ``n_sites + m``, hence ``m``: for ``m = 1`` only
+            ``blocking = 1`` works, and ``blocking="auto"`` only tries
+            divisors of ``m``. Default: single-vertex readout
+            :math:`\ell=e_0`.
         digraph : dict, optional
             Hand-picked digraph ``{v: [targets]}`` on the vertices
             ``0..bond_dim-1``, used at every site; each vertex needs between 1
             and ``d`` distinct targets. Default: random (see ``out_degree``),
-            redrawn at every site in the resampled (site-dependent) case.
+            redrawn at every site in the resampled (site-dependent) case and
+            drawn once in the uniform case.
         out_degree : int or "random", optional
-            Out-degree of the random digraph: fixed (capped at
-            ``min(d, bond_dim)``, the default), or ``"random"``, drawn
-            uniformly in ``1..min(d, bond_dim)`` for every vertex.
-            Ignored when ``digraph`` is given.
+            Out-degree of the random digraph: a fixed value capped at
+            ``min(d, bond_dim)`` (default: the cap), or ``"random"`` for a
+            degree drawn uniformly in ``1..min(d, bond_dim)`` for every
+            vertex. Ignored when ``digraph`` is given.
         ranks : "balanced", "random" or dict
             Rank partition of every row: as equal as possible (default), a
             uniformly random composition of ``d`` into positive parts (drawn
-            per row and per site), or hand-picked ``{v: [ranks]}``, one
-            positive rank per target of ``v`` in the order of the digraph's
+            per row and per site), or hand-picked ``{v: [ranks]}`` with one
+            positive rank per target of ``v``, in the order of the digraph's
             target list, summing to ``d`` (requires ``digraph``).
-
-        Every choice is certified by the same theorem; the non-default
-        options define *different ensembles* on the certified class, so
-        statistics are not comparable with the default one.
 
         Returns
         -------
         tensors : list of ndarray
-            Site tensors ``(d_eff, d_eff, D_L, D_R)``.
-        l_vec, r_vec : ndarray
-            Boundary vectors.
-        """
+            Site tensors ``A[p_in, p_out, bond_L, bond_R]`` of shape
+            ``(d**blocking, d**blocking, bond_dim, bond_dim)``; with
+            ``readout`` the first tensor has ``bond_L = 1``.
+        l_vec : ndarray
+            Left boundary vector, shape ``(bond_dim,)`` (``(1,)`` with
+            ``readout``).
+        r_vec : ndarray
+            Right boundary vector, shape ``(bond_dim,)``, all ones.
 
+        Raises
+        ------
+        ValueError
+            For invalid sizes (see :meth:`_generate`), an invalid ``digraph``
+            or ``ranks``, ``ranks`` given as a dict without ``digraph``,
+            ``out_degree < 1``, or ``blocking`` not dividing the chain length
+            (with ``readout``: ``n_sites`` and ``m``).
+        RuntimeError
+            If ``verify`` is true and a numerical check fails.
+
+        Notes
+        -----
+        Certified algebraically: every row of every drawn tensor (and of the
+        readout cascade) satisfies (RR) for any Haar draw and any rank
+        partition. With ``verify=True`` this is re-checked numerically at an
+        absolute tolerance of ``1e-9`` (:func:`_check_row_resolution`,
+        :func:`_check_combined_readout_cascade`); in the uniform case only the
+        single repeated tensor is checked. The non-default choices of
+        ``digraph``, ``out_degree`` and ``ranks`` define different ensembles
+        on the same certified class, so statistics are not comparable with the
+        default one. The chain-level safeguards of :func:`_finalize_chain` are
+        independent numerical checks.
+        """
         if digraph is not None:
             digraph = _check_digraph(digraph, bond_dim, d)
         if isinstance(ranks, dict):
@@ -1280,10 +1914,14 @@ class MPUGenerator:
             _check_ranks(ranks, digraph, d)
 
         def build_sites(n_sites_total: int, rng: np.random.Generator):
+            # Callback of _generate: builds the bulk sites (and the readout
+            # cascade) in construction order together with the boundary vectors.
             if digraph is None:
                 edges = _random_out_regular_digraph(bond_dim, d, rng, out_degree)
 
             def make_site(r: np.random.Generator) -> np.ndarray:
+                # One bulk tensor; a fresh random digraph per site only in the
+                # resampled case, so uniform generators reuse ``edges``.
                 if digraph is not None:
                     site_edges = digraph
                 elif self._resample:
@@ -1305,9 +1943,8 @@ class MPUGenerator:
                 cascade_sites = _combined_readout_sites(readout, d, bond_dim, rng)
                 if self.verify:
                     _check_combined_readout_cascade(cascade_sites)
-                # cascade_sites[0] has bond_L = 1 and pairs with l_vec = (1).
-                # Appended in reverse so that _finalize_chain's reversal puts
-                # the cascade at the left end in level order.
+                # Reversed because _finalize_chain reverses the list, which puts
+                # the cascade (level 0 first, bond_L = 1) at the left end.
                 sites = sites + list(reversed(cascade_sites))
                 l_vec = np.array([1.0], dtype=complex)
 
@@ -1316,9 +1953,7 @@ class MPUGenerator:
 
         return self._generate(d, bond_dim, n_sites, n_blocks, blocking, max_blocking, build_sites)
 
-    # -----------------------------------------------------------------
-    # Mode II: fusion closure
-    # -----------------------------------------------------------------
+    # --- Mode II: fusion closure ---
 
     def fusion(
         self,
@@ -1332,51 +1967,89 @@ class MPUGenerator:
         group: str = "Zn",
         group_n: int | list[int] = 3,
     ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
-        r"""Mode II (fusion closure): bond-diagonal tensors on a closed channel set.
+        r"""Sample a Mode II (fusion closure) MPU from a bond-diagonal skeleton.
 
-        :math:`A[a,b]=\delta_{ab}\,y_a` with channels closing monomially,
-        :math:`y_u^\dagger y_v\in\{0\}\cup\{y_w\}` (FC), and a boundary
-        :math:`\ell` on the skeleton's admissible manifold (B), :math:`r=(1,\dots,1)`.
-        Then :math:`U_N=\sum_u \ell_u\,y_u^{\otimes N}` is unitary for every
-        :math:`N` (thesis ``thm:mode2-unitarity``; paper ``eq:fusion-closure``).
-        Each site conjugates all channels by one Haar unitary (dressing).
+        The tensor is :math:`A[a,b]=\delta_{ab}\,y_a`, the channels close
+        monomially, :math:`y_u^\dagger y_v\in\{0\}\cup\{y_w\}` (FC), the
+        boundary :math:`\ell` lies on the skeleton's admissible manifold (B),
+        and :math:`r=(1,\dots,1)`. Then
+        :math:`U_N=\sum_u \ell_u\,y_u^{\otimes N}` is unitary for every
+        :math:`N` (thesis ``thm:mode2-unitarity``). Each site conjugates all
+        channels by one Haar unitary (the dressing), drawn per site, or once
+        in the uniform case. The skeletons, their dimension constraints and
+        the checks run with ``verify=True`` are listed in Notes.
 
         Parameters
         ----------
         d, bond_dim, n_sites, n_blocks, blocking, max_blocking
             As in :meth:`branching`; ``bond_dim`` is the number of channels.
         skeleton : {"cyclic", "nested_flag", "matrix_units", "group"}
-            Channel family (below).
+            Channel family (see Notes). Default ``"cyclic"``.
         group : {"Zn", "Zn_product", "S3"}
-            Group for ``skeleton="group"`` (see :func:`_finite_group_table`).
+            Group for ``skeleton="group"`` (see :func:`_finite_group_table`);
+            ignored otherwise.
         group_n : int or list of int
-            Order of ``Zn``, or the factor orders of ``Zn_product``.
+            Order of ``Zn``, or the factor orders of ``Zn_product``; ignored
+            for ``S3`` and for the other skeletons. Default 3.
 
         Returns
         -------
-        tensors, l_vec, r_vec
-            As in :meth:`branching`.
+        tensors : list of ndarray
+            Site tensors ``A[p_in, p_out, bond_L, bond_R]`` of shape
+            ``(d**blocking, d**blocking, bond_dim, bond_dim)``, bond-diagonal
+            before blocking.
+        l_vec : ndarray
+            Left boundary vector, shape ``(bond_dim,)``.
+        r_vec : ndarray
+            Right boundary vector, shape ``(bond_dim,)``, all ones.
+
+        Raises
+        ------
+        ValueError
+            For invalid sizes (see :meth:`_generate`), an unknown ``skeleton``
+            or ``group``, or dimensions incompatible with the skeleton (listed
+            in Notes).
+        RuntimeError
+            If ``verify`` is true and a numerical check fails.
 
         Notes
         -----
-        ``skeleton``:
-        - ``"cyclic"`` (default): :math:`\mathbb Z_M` characters
-          (:func:`_cyclic_character_channels`), flat-Fourier boundary
-          (:func:`_flat_spectrum_boundary`). Needs ``bond_dim <= d``. A
+        Skeletons (channels; boundary; constraint):
+
+        - ``"cyclic"``: :math:`\mathbb Z_M` characters
+          (:func:`_cyclic_character_channels`); flat-Fourier boundary
+          (:func:`_flat_spectrum_boundary`); ``bond_dim <= d``. It is a
           group-convolution skeleton only when ``bond_dim`` divides ``d``.
-        - ``"nested_flag"``: nested projectors, closure :math:`\max(u,v)`
-          (:func:`_nested_flag_channels`, :func:`_nested_flag_boundary`);
-          contains MCZ / diagonal phase. Needs ``bond_dim <= d``.
+        - ``"nested_flag"``: nested projectors with closure :math:`\max(u,v)`
+          (:func:`_nested_flag_channels`); boundary on a flat torus
+          (:func:`_nested_flag_boundary`); ``bond_dim <= d``. Contains the
+          MCZ / diagonal-phase family.
         - ``"matrix_units"``: identity channel plus :math:`m^2` matrix units
-          :math:`y_{(i,j)}=w_iw_j^\dagger` (:func:`_matrix_unit_channels`,
-          :func:`_matrix_unit_boundary`); contains subspace rotations.
-          ``bond_dim = 1 + m**2`` with ``m <= d`` (2, 5, 10, 17, ...).
-        - ``"group"``: group convolution, the left-regular representation
-          of a finite group (:func:`_group_regular_channels`), boundary on
-          the Peter-Weyl manifold :math:`\prod_\rho U(d_\rho)`
+          :math:`y_{(i,j)}=w_iw_j^\dagger` (:func:`_matrix_unit_channels`);
+          boundary from a Haar :math:`U(m)` (:func:`_matrix_unit_boundary`);
+          ``bond_dim = 1 + m**2`` with ``m <= d`` (``bond_dim`` = 2, 5, 10,
+          17, ...).
+        - ``"group"``: left-regular representation of a finite group
+          (:func:`_group_regular_channels`); boundary on the Peter-Weyl
+          manifold :math:`\prod_\rho U(d_\rho)`
           (:func:`_group_fourier_boundary`); ``d = bond_dim = |G|``.
-          ``group="Zn_product"`` covers every finite abelian group,
+          ``group="Zn_product"`` covers every finite abelian group and
           ``group="S3"`` the smallest non-abelian one.
+
+        Certified algebraically: (FC) and (B) hold for the construction of each
+        skeleton. With ``verify=True`` the following are re-checked
+        numerically at absolute tolerance ``1e-9``:
+
+        - ``cyclic``: (FC) and (B) (flat spectrum);
+        - ``group``: the representation property of the irreps, (FC) and (B)
+          (direct double sum);
+        - ``nested_flag``, ``matrix_units``: (FC) only. There is no check of
+          (B): the boundary is constructed on the admissible manifold;
+        - all channel families: linear independence of the channels (skipped
+          for ``matrix_units`` when ``m == d``, where it fails by design).
+
+        The chain-level safeguards of :func:`_finalize_chain` are independent
+        numerical checks.
         """
         if skeleton == "cyclic":
             if bond_dim > d:
@@ -1426,6 +2099,9 @@ class MPUGenerator:
             )
 
         def build_sites(n_sites_total: int, rng: np.random.Generator):
+            # Callback of _generate: the boundary vector is drawn once per chain,
+            # the dressed channel tensors by ``make_site`` (one per site, or one
+            # repeated in the uniform case).
             if skeleton == "cyclic":
 
                 def make_site(r: np.random.Generator) -> np.ndarray:
@@ -1454,20 +2130,17 @@ class MPUGenerator:
                         A[:, :, a, a] = y[a].T
                     return A
 
-                # Closed-form admissible boundary (flat torus), see docstring.
                 l_vec = _nested_flag_boundary(bond_dim, rng)
 
             elif skeleton == "matrix_units":
-                # Identity channel + m^2 matrix units; (B) is the unitarity
-                # of Lambda + 1_m (see _matrix_unit_boundary).
 
                 def make_site(r: np.random.Generator) -> np.ndarray:
                     y, labels = _matrix_unit_channels(d, m, r)
                     if self.verify:
                         _check_matrix_unit_closure(y, labels)
                         if m < d:
-                            # For m == d the identity equals sum_i y_(i,i), so
-                            # the channels are linearly dependent by design.
+                            # For m == d the identity equals sum_i y_(i,i): the
+                            # channels are linearly dependent by design.
                             _check_channel_span_full_rank(y, bond_dim)
                     A = np.zeros((d, d, bond_dim, bond_dim), dtype=complex)
                     for a in range(bond_dim):
@@ -1477,8 +2150,6 @@ class MPUGenerator:
                 l_vec = _matrix_unit_boundary(m, rng)
 
             else:  # group
-                # Group convolution: left-regular representation, one Haar
-                # dressing W per site, Peter-Weyl boundary.
                 elements, gmult, ginv, gid, irreps = _finite_group_table(group, group_n)
                 if self.verify:
                     _check_group_representation(elements, gmult, irreps)
@@ -1507,9 +2178,7 @@ class MPUGenerator:
 
         return self._generate(d, bond_dim, n_sites, n_blocks, blocking, max_blocking, build_sites)
 
-    # -----------------------------------------------------------------
-    # Mode II-B: bond-resolved fusion (skeletons in skeletons.py)
-    # -----------------------------------------------------------------
+    # --- Mode II-B: bond-resolved fusion (skeletons in skeletons.py) ---
 
     def fusion_bond_resolved(
         self,
@@ -1519,34 +2188,66 @@ class MPUGenerator:
         blocking: int | str = 1,
         max_blocking: int = 8,
     ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
-        r"""Mode II-B (bond-resolved fusion) from a fixed skeleton.
+        r"""Sample a Mode II-B (bond-resolved fusion) MPU from a fixed skeleton.
 
         The core tensors and boundary vectors of ``skeleton`` are fixed; only
         the physical dressing :math:`B_u\mapsto(W_n\otimes\bar W_n)B_u` is
-        drawn per site (thesis, Mode II-B sampling remark).
+        drawn per site (thesis, Mode II-B sampling remark). The sites are
+        taken from ``skeleton.dress(rng)``, one call per site (one call in the
+        uniform case).
 
         Parameters
         ----------
         skeleton : mpu_generators.skeletons.FusionSkeleton
-            E.g. :func:`mpu_generators.skeletons.lee_yang_skeleton`.
+            Fixed core tensors and boundaries, e.g.
+            :func:`mpu_generators.skeletons.lee_yang_skeleton`; its ``d``,
+            ``bond_dim``, ``l_vec`` and ``r_vec`` define the chain.
         n_sites, n_blocks, blocking, max_blocking
             As in :meth:`branching`.
 
         Returns
         -------
-        tensors, l_vec, r_vec
-            As in :meth:`branching`.
+        tensors : list of ndarray
+            Site tensors ``A[p_in, p_out, bond_L, bond_R]`` of shape
+            ``(skeleton.d**blocking, skeleton.d**blocking, skeleton.bond_dim,
+            skeleton.bond_dim)``.
+        l_vec, r_vec : ndarray
+            Copies of ``skeleton.l_vec`` and ``skeleton.r_vec``.
+
+        Raises
+        ------
+        ValueError
+            If not exactly one of ``n_sites`` and ``n_blocks`` is given, for
+            invalid sizes (as in :meth:`_generate`), or if the blocking search
+            fails.
+        RuntimeError
+            If ``verify`` is true and the numerical safeguards fail.
 
         Notes
         -----
-        Unlike the other modes, the sites are used in draw order (no
-        reversal), so for per-site resampling the chains for increasing
-        :math:`N` extend a common sequence at the *right* end.
+        The unitarity of Mode II-B chains is validated numerically only: no
+        algebraic certificate is checked at generation time. With
+        ``verify=True`` the chain passes the normalization check for any
+        :math:`N` and the dense check
+        :math:`\|U^\dagger U-1\|_F\le 10^{-8}\sqrt{d^N}` for
+        :math:`d^N\le 2^{10}` (:func:`_verify_chain`); the dense check is the
+        only direct test of unitarity. The intertwiner helpers
+        :func:`mpu_generators.skeletons.solve_intertwiner` and
+        :func:`mpu_generators.skeletons.verify_intertwiner` are standalone: the
+        generator does not call them, and they can be run on a skeleton
+        separately. The null-complement and boundary-compatibility conditions
+        of the thesis are not checked by any helper.
+
+        Unlike the other modes, the sites are used in draw order, without the
+        reversal of :func:`_finalize_chain`, so for per-site resampling the
+        chains for increasing :math:`N` extend a common sequence at the
+        *right* end.
         """
         if (n_sites is None) == (n_blocks is None):
             raise ValueError("Give exactly one of n_sites or n_blocks.")
 
         def _one_blocking(sites_L: int, L: int):
+            """Validate ``(sites_L, L)``, then dress, block and verify one chain."""
             if sites_L < 2:
                 raise ValueError(f"n_sites must be >= 2, got {sites_L}.")
             if sites_L % L:
@@ -1568,9 +2269,7 @@ class MPUGenerator:
             _one_blocking, skeleton.d, skeleton.bond_dim, n_sites, n_blocks, blocking, max_blocking
         )
 
-    # -----------------------------------------------------------------
-    # Grafted composition (Mode I inside Mode II)
-    # -----------------------------------------------------------------
+    # --- Grafted composition (Mode I inside Mode II) ---
 
     def grafted(
         self,
@@ -1581,7 +2280,7 @@ class MPUGenerator:
         blocking: int | str = 1,
         max_blocking: int = 8,
     ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
-        r"""Grafted composition: a Mode I two-vertex path inside Mode II channels.
+        r"""Sample a grafted MPU (Mode I path inside Mode II channels).
 
         Bond index :math:`(a, g)` with :math:`a\in\{0,1\}` a Mode I vertex
         (edges :math:`0\to0` identity, :math:`1\to\{1,0\}` resolved) and
@@ -1597,16 +2296,34 @@ class MPUGenerator:
         d, n_sites, n_blocks, blocking, max_blocking
             As in :meth:`branching`.
         bond_dim : int
-            ``2 * n_channels`` with ``n_channels <= d``.
+            Bond dimension ``2 * n_channels`` (default 2, i.e. one channel);
+            must be even with ``n_channels <= d``.
 
         Returns
         -------
-        tensors, l_vec, r_vec
-            As in :meth:`branching`.
+        tensors : list of ndarray
+            Site tensors ``A[p_in, p_out, bond_L, bond_R]`` of shape
+            ``(d**blocking, d**blocking, bond_dim, bond_dim)``.
+        l_vec : ndarray
+            Left boundary vector, shape ``(bond_dim,)``; vanishes on the
+            first ``n_channels`` entries.
+        r_vec : ndarray
+            Right boundary vector, shape ``(bond_dim,)``, all ones.
+
+        Raises
+        ------
+        ValueError
+            If ``bond_dim`` is odd, ``bond_dim // 2 > d``, or the sizes are
+            invalid (see :meth:`_generate`).
+        RuntimeError
+            If ``verify`` is true and a numerical check fails.
 
         Notes
         -----
-        The channels are the cyclic skeleton
+        Certified algebraically through its two factors: (RR) for the Mode I
+        part and (FC) with a flat-spectrum boundary for the channels, each
+        re-checked numerically at absolute tolerance ``1e-9`` when
+        ``verify=True``. The channels are the cyclic skeleton
         (:func:`_cyclic_character_channels`); the thesis states the theorem
         for the group-convolution (regular representation) skeleton, which
         coincides with it when ``n_channels`` divides ``d``. Grafting is not
@@ -1623,6 +2340,8 @@ class MPUGenerator:
         k_edges = {0: [0], 1: [1, 0]}
 
         def build_sites(n_sites_total: int, rng: np.random.Generator):
+            # Callback of _generate: one flat-spectrum boundary per chain, one
+            # grafted tensor per site (or one repeated, in the uniform case).
             def make_site(r: np.random.Generator) -> np.ndarray:
                 K = _mode1_site_tensor(2, k_edges, d, r, identity_rows=(0,))
                 y = _cyclic_character_channels(d, n_channels, r)
@@ -1636,9 +2355,9 @@ class MPUGenerator:
                         if not np.any(K[:, :, a, ap]):
                             continue
                         for g in range(n_channels):
-                            # K stores the transposed Mode I block, y[g] is an
-                            # operator (out, in): y[g].T @ K_store is the
-                            # stored transpose of the operator K[a,ap] @ y[g].
+                            # K stores the transposed block and y[g] is an
+                            # operator, so y[g].T @ K is the stored transpose
+                            # of the operator K[a,ap] @ y[g].
                             A[:, :, a * n_channels + g, ap * n_channels + g] = (
                                 y[g].T @ K[:, :, a, ap]
                             )
@@ -1669,27 +2388,51 @@ def generate_random_mpu(
     max_blocking: int = 8,
     **mode_kwargs,
 ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
-    """Functional interface to the generators.
+    """Dispatch to :class:`MPUGenerator` or ``UniformMPUGenerator`` by ``mode``.
 
     Parameters
     ----------
-    n_sites, d, bond_dim, blocking, n_blocks, max_blocking
-        As in :meth:`MPUGenerator.branching`.
+    n_sites : int, optional
+        Number of physical sites (give exactly one of ``n_sites`` and
+        ``n_blocks``).
+    d : int
+        Local physical dimension.
+    bond_dim : int
+        Bond dimension.
     mode : {"branching", "mode1", "fusion", "mode2", "grafted"}
-        Which construction to use.
+        Construction: :meth:`MPUGenerator.branching`,
+        :meth:`MPUGenerator.fusion` or :meth:`MPUGenerator.grafted`. Mode II-B
+        needs a ``FusionSkeleton`` object and is only available through
+        :meth:`MPUGenerator.fusion_bond_resolved`.
+    blocking : int or "auto"
+        Physical sites per returned tensor.
     uniform : bool
         Use :class:`~mpu_generators.uniform.UniformMPUGenerator`
         (translation invariant) instead of :class:`MPUGenerator`.
-    seed, verify
-        Passed to the generator constructor.
+    seed : int
+        Seed of the generator.
+    verify : bool
+        Re-check the algebraic certificate numerically and run the numerical
+        safeguards (see :class:`MPUGenerator`).
+    n_blocks : int, optional
+        Number of tensors after blocking, instead of ``n_sites``.
+    max_blocking : int
+        Largest block size tried by ``blocking="auto"``.
     **mode_kwargs
         Forwarded to the method, e.g. ``skeleton=`` for fusion or
         ``readout=`` for branching.
 
     Returns
     -------
-    tensors, l_vec, r_vec
-        As in :meth:`MPUGenerator.branching`.
+    tensors : list of ndarray
+        Site tensors ``A[p_in, p_out, bond_L, bond_R]``.
+    l_vec, r_vec : ndarray
+        Boundary vectors.
+
+    Raises
+    ------
+    ValueError
+        If ``mode`` is unknown, or the selected method rejects its arguments.
 
     Examples
     --------

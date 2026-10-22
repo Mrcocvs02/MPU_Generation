@@ -1,8 +1,10 @@
-"""Tests for the certificate checks, the Mode II-B helpers and the public API.
+"""Certificate checks, Mode II-B helpers and the named-family registry.
 
-Complements ``test_mpu_generators.py``: negative tests (every algebraic
-check must reject a perturbed tensor), the rectangular intertwiner of the
-thesis Lee-Yang example, and the named-family registry.
+Negative tests verify that every algebraic check rejects a perturbed tensor;
+the rectangular intertwiner of the thesis Lee-Yang example is verified by its
+residual and rank; and every entry of ``FAMILIES`` is checked to build a
+chain whose dense unitary (``TreeMPU.checks.dense_unitary_from_tensors``) is
+unitary.
 """
 
 import numpy as np
@@ -29,15 +31,15 @@ RNG = np.random.default_rng(1234)
 
 
 def _perturb(A, eps=1e-3):
+    """Add a small complex Gaussian perturbation to ``A``."""
     return A + eps * (RNG.standard_normal(A.shape) + 1j * RNG.standard_normal(A.shape))
 
 
-# ---------------------------------------------------------------------------
-# Negative tests: every check must reject a perturbed object
-# ---------------------------------------------------------------------------
+# --- Negative tests: every check must reject a perturbed object ---
 
 
 def test_row_resolution_check_rejects_perturbed_tensor():
+    """The (RR) check accepts a Mode I tensor and rejects a perturbed one."""
     t, _, _ = UniformMPUGenerator(seed=0).branching(d=2, bond_dim=3, n_sites=2)
     _check_row_resolution(t[0])
     with pytest.raises(RuntimeError):
@@ -45,6 +47,7 @@ def test_row_resolution_check_rejects_perturbed_tensor():
 
 
 def test_fusion_closure_checks_reject_perturbed_channels():
+    """The (FC) checks accept the channels and reject perturbed ones."""
     from mpu_generators.base import _cyclic_character_channels, _nested_flag_channels
 
     y = _cyclic_character_channels(3, 3, np.random.default_rng(0))
@@ -58,6 +61,7 @@ def test_fusion_closure_checks_reject_perturbed_channels():
 
 
 def test_group_boundary_check_rejects_perturbed_boundary():
+    """The group boundary check rejects a perturbed boundary vector."""
     from mpu_generators.base import _group_fourier_boundary
 
     elements, mult, _inv, identity, irreps = _finite_group_table("S3")
@@ -69,8 +73,7 @@ def test_group_boundary_check_rejects_perturbed_boundary():
 
 
 def test_verify_chain_rejects_non_unitary_chain_with_correct_normalization():
-    """diag(sqrt(2), 0) has Tr(U^dag U)/d = 1 but is not unitary: the
-    normalization alone passes it, the dense check must not."""
+    """The dense check rejects a non-unitary chain passing the normalization check."""
     A = np.zeros((2, 2, 1, 1), dtype=complex)
     A[0, 0, 0, 0] = np.sqrt(2)  # one site: diag(sqrt 2, 0), Tr(D^dag D)/d = 1
     one = np.ones(1, dtype=complex)
@@ -78,12 +81,11 @@ def test_verify_chain_rejects_non_unitary_chain_with_correct_normalization():
         _verify_chain([A, A], one, one)
 
 
-# ---------------------------------------------------------------------------
-# Mode II-B helpers
-# ---------------------------------------------------------------------------
+# --- Mode II-B helpers ---
 
 
 def test_mpo_product_tensor_reduces_to_matrix_product_at_bond_one():
+    """At bond dimension one the MPO product tensor is the matrix product."""
     X = RNG.standard_normal((3, 3)) + 1j * RNG.standard_normal((3, 3))
     Y = RNG.standard_normal((3, 3)) + 1j * RNG.standard_normal((3, 3))
     P = mpo_product_tensor(X.T[:, :, None, None], Y.T[:, :, None, None])
@@ -91,8 +93,10 @@ def test_mpo_product_tensor_reduces_to_matrix_product_at_bond_one():
 
 
 def test_lee_yang_rectangular_intertwiner_exists():
-    """Thesis eq:intertwiner: sigma*sigma = e + sigma needs an injective
-    V : C^(2+3) -> C^9 (dimensions differ)."""
+    """An injective 9 x 5 intertwiner exists for sigma * sigma = e + sigma.
+
+    This is the intertwiner condition of thesis ``eq:intertwiner``.
+    """
     sk = lee_yang_skeleton()
     Bss = mpo_product_tensor(sk.channels["sigma"], sk.channels["sigma"])
     V = solve_intertwiner(Bss, [sk.channels["e"], sk.channels["sigma"]])
@@ -102,6 +106,7 @@ def test_lee_yang_rectangular_intertwiner_exists():
 
 
 def test_solve_intertwiner_rejects_impossible_dimensions():
+    """The solver rejects summands with bonds above the product bond dimension."""
     B = np.zeros((2, 2, 2, 2), dtype=complex)
     with pytest.raises(ValueError):
         solve_intertwiner(B, [np.zeros((2, 2, 2, 2)), np.zeros((2, 2, 1, 1))])
@@ -109,6 +114,7 @@ def test_solve_intertwiner_rejects_impossible_dimensions():
 
 @pytest.mark.parametrize("alpha,beta", [(0.0, np.pi), (0.3, 1.7), (-1.2, 0.4)])
 def test_lee_yang_boundary_family_is_unitary(alpha, beta):
+    """The Lee-Yang boundary family is unitary for several phases."""
     t, l, r = UniformMPUGenerator(seed=0, verify=False).fusion_bond_resolved(
         lee_yang_skeleton(alpha, beta), n_sites=3
     )
@@ -116,13 +122,12 @@ def test_lee_yang_boundary_family_is_unitary(alpha, beta):
     np.testing.assert_allclose(U.conj().T @ U, np.eye(U.shape[0]), atol=1e-10)
 
 
-# ---------------------------------------------------------------------------
-# Family registry and reproducibility
-# ---------------------------------------------------------------------------
+# --- Family registry and reproducibility ---
 
 
 @pytest.mark.parametrize("name", sorted(FAMILIES))
 def test_every_family_builds_a_unitary(name):
+    """Every registered family builds a unitary chain."""
     kwargs = {"fusion_matrix_units": {"d": 2, "bond_dim": 2}}.get(name, {"d": 2, "bond_dim": 2})
     t, l, r = build_family(name, seed=0, **kwargs)
     dim = int(np.prod([A.shape[0] for A in t]))
@@ -133,13 +138,14 @@ def test_every_family_builds_a_unitary(name):
 
 
 def test_uniform_site_tensor_is_independent_of_n_sites():
-    """The ensembles of the paper rely on this (one tensor per seed)."""
+    """The uniform site tensor does not depend on the chain length."""
     a = UniformMPUGenerator(seed=7).branching(d=2, bond_dim=2, n_sites=2)[0][0]
     b = UniformMPUGenerator(seed=7).branching(d=2, bond_dim=2, n_sites=8)[0][0]
     np.testing.assert_array_equal(a, b)
 
 
 def test_repeated_calls_are_reproducible():
+    """Repeated calls of one generator give identical output."""
     g = MPUGenerator(seed=3)
     t1, l1, _r1 = g.fusion(d=3, bond_dim=3, n_sites=3, skeleton="group", group="Zn", group_n=3)
     t2, l2, _r2 = g.fusion(d=3, bond_dim=3, n_sites=3, skeleton="group", group="Zn", group_n=3)
@@ -149,8 +155,7 @@ def test_repeated_calls_are_reproducible():
 
 
 def test_cnot_witness_is_the_group_automaton_Z2():
-    """group_automaton("Zn", 2) with l = e_0 is the CNOT-staircase witness:
-    the N = 2 chain is a CNOT (control on one site, target on the other)."""
+    """group_automaton("Zn", 2) with l = e_0 gives a CNOT at N = 2."""
     A, l, r = UniformMPUGenerator(seed=0).group_automaton(group="Zn", n=2)
     U = dense_unitary_from_tensors([A, A], l, r)
     # U is a permutation matrix of order 2 acting non-trivially on 2 qubits
@@ -160,5 +165,6 @@ def test_cnot_witness_is_the_group_automaton_Z2():
 
 
 def test_explicit_blocking_is_refused_before_allocation():
+    """An excessive explicit blocking is refused by the size cap."""
     with pytest.raises(ValueError, match="safety cap"):
         MPUGenerator(seed=0).branching(d=2, bond_dim=2, n_blocks=2, blocking=16)

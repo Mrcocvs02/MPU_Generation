@@ -11,15 +11,18 @@ returned tensor list then contains the same array ``N`` times, and
 Additional translation-invariant constructions
 ----------------------------------------------
 The remaining methods return a single bulk tensor ``(A, l_vec, r_vec)``
-instead of a list. They come from earlier working notes on the
-translation-invariant case and are **not** part of the thesis chapter or
-the tensor-first sampling paper:
+(``A`` of shape ``(d, d, D, D)``) instead of a list. They are specific to
+the translation-invariant case and are **not** constructed in the thesis
+or in the tensor-first sampling paper; they are validated by the unit
+tests only:
 
 * :meth:`~UniformMPUGenerator.clock`,
   :meth:`~UniformMPUGenerator.group_automaton` and
   :meth:`~UniformMPUGenerator.degenerate_rows` are special cases of Mode I
   row resolution (``group_automaton("Zn", n=2)`` is the CNOT-staircase
-  witness of the paper, :math:`A[p,q]=P_qX^p`, :math:`\ell=e_0`);
+  example of the paper, :math:`A[p,q]=P_qX^p`, :math:`\ell=e_0`);
+  ``clock`` returns a chain of on-site unitaries that cycle with period
+  :math:`D` along the chain, the other two are in general entangling;
 * :meth:`~UniformMPUGenerator.self_direction`,
   :meth:`~UniformMPUGenerator.resonant` and
   :meth:`~UniformMPUGenerator.multi_symbol` give
@@ -45,8 +48,9 @@ from .base import (
     _random_out_regular_digraph,
 )
 
-#: Scale of the random (uncertified) entries in :meth:`UniformMPUGenerator.invariant_subspace`;
-#: any value works, a modest one keeps the tensor well conditioned.
+#: Scale of the random (uncertified) entries in
+#: :meth:`UniformMPUGenerator.invariant_subspace`; any value works, a modest
+#: one keeps the tensor well conditioned.
 _JUNK_SCALE = 0.3
 
 
@@ -58,26 +62,46 @@ def _rng(seed) -> np.random.Generator:
 class UniformMPUGenerator(MPUGenerator):
     r"""Translation-invariant variant of :class:`~mpu_generators.base.MPUGenerator`.
 
-    One site tensor is drawn per call and reused at every site, so the site
-    tensor is independent of ``n_sites`` for a fixed seed. See the module
-    docstring for the additional single-tensor constructions.
+    One site tensor is drawn per call and reused at every site. With
+    ``coherent_in_n=True`` (default) the site tensor is independent of
+    ``n_sites`` for a fixed seed. See the module docstring for the additional
+    single-tensor constructions.
+
+    Parameters
+    ----------
+    seed : int
+        Seed of the random number generator (default 0).
+    verify : bool
+        Run the algebraic checks at construction time and the numerical
+        safeguards on every generated chain (default True); see
+        :class:`~mpu_generators.base.MPUGenerator`.
+    coherent_in_n : bool
+        If True (default) the random stream does not depend on the chain
+        length; see :class:`~mpu_generators.base.MPUGenerator`.
+
+    Attributes
+    ----------
+    seed, verify, coherent_in_n
+        As given.
     """
 
     _resample = False
 
-    # =================================================================
-    # Special cases of Mode I row resolution
-    # =================================================================
+    # --- special cases of Mode I row resolution ---
 
     def clock(
         self, D: int = 3, d: int = 2, seed: int | None = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        r"""Clock construction: a :math:`D`-cycle with Haar unitaries on its edges.
+        r"""Return a :math:`D`-cycle tensor with Haar unitaries on its edges.
+
+        Not part of the thesis or paper; a special case of Mode I row
+        resolution with one target per row.
 
         :math:`A[a,a+1 \bmod D] = u_a` with independent :math:`u_a\sim\mathrm{Haar}(U(d))`.
         Every row has a single target, so (RR) reduces to :math:`u_a^\dagger u_a=1`.
         Boundary :math:`\ell=e_0`, :math:`r=(1,\dots,1)`; the chain is the
-        on-site product :math:`u_0\otimes u_1\otimes\cdots` (cyclically).
+        on-site product :math:`u_0\otimes u_1\otimes\cdots` (cyclically, with
+        period :math:`D`), which has operator-Schmidt rank 1.
 
         Parameters
         ----------
@@ -91,6 +115,8 @@ class UniformMPUGenerator(MPUGenerator):
         Returns
         -------
         A, l_vec, r_vec : ndarray
+            ``A`` of shape ``(d, d, D, D)``; ``l_vec = e_0`` and
+            ``r_vec = (1, ..., 1)``, both of length ``D``.
         """
         rng = _rng(self.seed if seed is None else seed)
         A = np.zeros((d, d, D, D), dtype=complex)
@@ -109,12 +135,17 @@ class UniformMPUGenerator(MPUGenerator):
         cocycle=None,
         seed: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        r"""Group-multiplication automaton, :math:`A[g,h]=|h\rangle\langle g^{-1}h|`.
+        r"""Return the group-multiplication automaton of a finite group.
+
+        The tensor is :math:`A[g,h]=|h\rangle\langle g^{-1}h|`.
+
+        Not part of the thesis or paper (except the ``Zn``, ``n=2`` CNOT
+        example); a special case of Mode I row resolution.
 
         For a finite group :math:`G` (:math:`D=d=|G|`), optionally twisted by a
         2-cocycle, :math:`A[g,h]=\omega(g,g^{-1}h)\,|h\rangle\langle g^{-1}h|`.
-        (RR) holds exactly for every group (permutation algebra; unimodular
-        phases do not affect it). Boundary :math:`\ell=e_{\rm id}`,
+        (RR) holds for every group (permutation algebra; unimodular phases do
+        not affect it) and is checked numerically. Boundary :math:`\ell=e_{\rm id}`,
         :math:`r=(1,\dots,1)`. For ``group="Zn", n=2`` this is the CNOT witness
         of the tensor-first sampling paper.
 
@@ -132,6 +163,12 @@ class UniformMPUGenerator(MPUGenerator):
         Returns
         -------
         A, l_vec, r_vec : ndarray
+            ``A`` of shape ``(d, d, D, D)`` with ``D = d = |G|``.
+
+        Raises
+        ------
+        ValueError
+            If ``group`` is not ``"Zn"`` or ``"Sn"``.
 
         Notes
         -----
@@ -166,9 +203,7 @@ class UniformMPUGenerator(MPUGenerator):
         r_vec = np.ones(D, dtype=complex)
         return A, l_vec, r_vec
 
-    # =================================================================
-    # Single-tensor constructions (on-site products, embeddings)
-    # =================================================================
+    # --- single-tensor constructions (on-site products, embeddings) ---
 
     def self_direction(
         self,
@@ -178,7 +213,10 @@ class UniformMPUGenerator(MPUGenerator):
         W: np.ndarray | None = None,
         seed: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        r"""Self-direction construction: :math:`\sum_b A[a,b]\,r_b = \mu\, r_a W`.
+        r"""Return a tensor with :math:`\sum_b A[a,b]\,r_b = \mu\, r_a W`.
+
+        Not part of the thesis or paper. The chain is an on-site product
+        unitary (see Notes).
 
         With :math:`|\mu|=1` and :math:`W` unitary, induction gives
         :math:`U_N=\mu^N\langle\bar\ell, r\rangle\,W^{\otimes N}`, unitary for
@@ -206,7 +244,8 @@ class UniformMPUGenerator(MPUGenerator):
 
         Notes
         -----
-        :math:`U_N` is an on-site product unitary (zero operator entanglement).
+        :math:`U_N` is an on-site product unitary (zero operator entanglement);
+        its unitarity is checked numerically.
         """
         rng = _rng(self.seed if seed is None else seed)
         r_vec = rng.standard_normal(D) + 1j * rng.standard_normal(D)
@@ -234,7 +273,11 @@ class UniformMPUGenerator(MPUGenerator):
         target_phases: np.ndarray | None = None,
         seed: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        r"""Resonant construction: a bond matrix with spectrum on the :math:`D`-th roots of unity.
+        r"""Return a tensor whose bond matrix has a root-of-unity spectrum.
+
+        The spectrum is the set of :math:`D`-th roots of unity. Not part of
+        the thesis or paper. The chain is an on-site product unitary times a
+        phase.
 
         :math:`A[a,b]=M[a,b]\,\tilde W` with :math:`M=S\,\mathrm{diag}(\omega^k)\,S^{-1}`,
         :math:`\omega=e^{2\pi i/D}`, :math:`S` a random invertible (non-unitary)
@@ -255,6 +298,8 @@ class UniformMPUGenerator(MPUGenerator):
         Returns
         -------
         A, l_vec, r_vec : ndarray
+            ``A`` of shape ``(d, d, D, D)``; ``l_vec`` and ``r_vec`` of length
+            ``D``.
 
         Notes
         -----
@@ -291,15 +336,27 @@ class UniformMPUGenerator(MPUGenerator):
     def multi_symbol(
         self, d: int = 3, seed: int | None = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        r"""Multi-symbol phase automaton: :meth:`self_direction` with a diagonal :math:`W`.
+        r"""Return :meth:`self_direction` with a diagonal :math:`W`.
+
+        Not part of the thesis or paper.
 
         :math:`W=\mathrm{diag}(e^{i\theta_0},\dots,e^{i\theta_{d-1}})`, :math:`\mu=1`,
         :math:`D=d`; :math:`U_N` applies a phase depending only on how many times
-        each physical symbol occurs.
+        each physical symbol occurs; the chain is an on-site product unitary
+        :math:`W^{\otimes N}`.
+
+        Parameters
+        ----------
+        d : int
+            Physical dimension (the bond dimension equals ``d``).
+        seed : int, optional
+            Overrides the generator seed for this call.
 
         Returns
         -------
         A, l_vec, r_vec : ndarray
+            ``A`` of shape ``(d, d, d, d)``; ``l_vec`` and ``r_vec`` of
+            length ``d``.
         """
         rng = _rng(self.seed if seed is None else seed)
         theta = rng.uniform(0.0, 2.0 * np.pi, size=d)
@@ -315,6 +372,8 @@ class UniformMPUGenerator(MPUGenerator):
         seed: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         r"""Embed a translation-invariant MPU in a larger bond space.
+
+        Not part of the thesis or paper.
 
         In a random (non-axis-aligned) basis :math:`S=[F\,|\,G]`, the bond matrix
         is block upper-triangular: ``sub_A`` on the :math:`k`-dimensional
@@ -370,7 +429,9 @@ class UniformMPUGenerator(MPUGenerator):
         groups: list[list[int]] | None = None,
         seed: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        r"""Mode I tensor with literally identical rows.
+        r"""Return a Mode I tensor with literally identical rows.
+
+        Not part of the thesis or paper beyond the remark cited below.
 
         Starting from a Mode I row-resolution tensor, the rows in each group are
         overwritten with copies of the group's first row. (RR) is a per-row
@@ -392,6 +453,12 @@ class UniformMPUGenerator(MPUGenerator):
         -------
         A, l_vec, r_vec : ndarray
             ``l_vec = e_{groups[0][0]}``, ``r_vec = (1, ..., 1)``.
+
+        Raises
+        ------
+        ValueError
+            If ``D < 2``, a group has fewer than two rows, a row index is out
+            of range, or a row appears in more than one group.
         """
         if D < 2:
             raise ValueError(f"degenerate_rows needs D >= 2, got D={D}.")
