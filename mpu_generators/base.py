@@ -12,41 +12,44 @@ is unitary for every chain length :math:`N`. For Modes I and II and the
 grafted composition this follows from an algebraic identity of the local
 tensor and boundary data (thesis ``thm:mode1-unitarity``,
 ``thm:mode2-unitarity``, ``thm:grafted-factorization``), not from tests at a
-few lengths. For Mode II-B no algebraic certificate is checked and unitarity
-is validated numerically only.
+few lengths; for Mode II-B it is validated numerically only.
 
 Constructions
 -------------
-* **Mode I (row resolution, RR)**: :meth:`MPUGenerator.branching`. Each row
-  of the bond digraph resolves the identity into mutually orthogonal
-  branches.
-* **Mode II (fusion closure, FC)**: :meth:`MPUGenerator.fusion`. A
-  bond-diagonal tensor whose channel matrices close under a fusion rule, with
-  a boundary vector (B) on the skeleton's admissible manifold. Skeletons:
-  ``cyclic``, ``nested_flag``, ``matrix_units`` and ``group`` (group
-  convolution; the group-boundary condition replaces the flat-spectrum one).
-* **Mode II-B (bond-resolved fusion)**: :meth:`MPUGenerator.fusion_bond_resolved`.
-  Fixed core tensors from a :class:`~mpu_generators.skeletons.FusionSkeleton`
-  with a resampled physical dressing.
-* **Grafted composition**: :meth:`MPUGenerator.grafted`. A Mode I two-vertex
-  path inside the channels of the cyclic Mode II skeleton.
+* **Mode I** (row resolution, RR): :meth:`MPUGenerator.branching`; every row
+  of the bond digraph resolves the identity into orthogonal branches.
+* **Mode II** (fusion closure, FC): :meth:`MPUGenerator.fusion`; bond-diagonal
+  channels closing under a fusion rule, boundary (B) on an admissible manifold.
+* **Mode II-B**: :meth:`MPUGenerator.fusion_bond_resolved`; fixed cores of a
+  :class:`~mpu_generators.skeletons.FusionSkeleton`, resampled dressing.
+* **Grafted**: :meth:`MPUGenerator.grafted`; a Mode I path inside the cyclic
+  Mode II channels.
 
 Certificates and checks
 -----------------------
-With ``verify=True`` the certificate of each mode is re-checked numerically,
-at an absolute Frobenius-norm tolerance of ``1e-9``, on every sampled tensor
-(once for the repeated tensor in the uniform case):
+With ``verify=True`` the certificate of each construction is re-checked
+numerically at an absolute tolerance of ``1e-9`` on every sampled tensor
+(once for the repeated tensor in the uniform case); this table is the single
+reference for the per-mode checks. "Independence" is the linear independence of
+the channels :math:`y_u`, skipped for ``matrix_units`` when ``m == d`` (where
+it fails by design).
 
-* Mode I and the readout cascade: (RR) on every row.
-* ``cyclic``: (FC) and (B) (flat Fourier spectrum).
-* ``group``: the representation property of the irreps, (FC) and (B) (direct
-  double sum).
-* ``nested_flag``, ``matrix_units``: (FC) only. Their boundary vector is
-  constructed on the admissible manifold and (B) is not checked.
-* Grafted: (RR) for the Mode I factor, (FC) and (B) (flat spectrum) for the
-  channels.
-* Mode II-B: none; the intertwiner helpers of
-  :mod:`mpu_generators.skeletons` are not called at generation.
+==============================  ==========================================================
+Construction                    Checks run with ``verify=True``
+==============================  ==========================================================
+Mode I (``branching``)         (RR) on every row, also of the readout cascade
+``fusion``, ``cyclic``          (FC); (B) flat Fourier spectrum; independence
+``fusion``, ``group``           irrep representation property; (FC); (B) by the direct
+                                double sum; independence
+``fusion``, ``nested_flag``     (FC); independence. (B) is not checked: the boundary is
+                                constructed on the admissible manifold
+``fusion``, ``matrix_units``    (FC); independence (if ``m < d``). (B) is not checked, as
+                                for ``nested_flag``
+Grafted                         (RR) for the Mode I factor; (FC), (B) (flat spectrum) and
+                                independence for the channels
+Mode II-B                       none (the intertwiner helpers of
+                                :mod:`mpu_generators.skeletons` are not called)
+==============================  ==========================================================
 
 Independently, every assembled chain passes the numerical safeguards of
 :func:`_finalize_chain` (:func:`_verify_chain` for Mode II-B): the
@@ -98,6 +101,14 @@ from TreeMPU.utils import satisfies_assumption_1 as _satisfies_assumption_1
 #: before allocation for explicit and automatic blocking.
 _AUTO_BLOCKING_MAX_BYTES = 512 * 1024 * 1024
 
+#: Default absolute tolerance of the ``_check_*`` certificates (Frobenius norm
+#: or max-norm of the residual); tight, because every certified construction
+#: holds to machine precision, yet far above double-precision round-off.
+_CHECK_ATOL = 1e-9
+#: Floor on ``|diag R|`` in the QR phase fix of the Haar sampler; it only
+#: prevents a division by zero (the diagonal is nonzero almost surely).
+_PHASE_FLOOR = 1e-300
+
 
 # --- Haar sampling ---
 
@@ -125,7 +136,7 @@ def _haar_unitary(dim: int, rng: np.random.Generator) -> np.ndarray:
     Z = rng.standard_normal((dim, dim)) + 1j * rng.standard_normal((dim, dim))
     Q, R = np.linalg.qr(Z)
     ph = np.diag(R)
-    ph = ph / np.maximum(np.abs(ph), 1e-300)
+    ph = ph / np.maximum(np.abs(ph), _PHASE_FLOOR)
     return (Q * ph[None, :]).astype(complex)
 
 
@@ -202,7 +213,7 @@ def _row_resolution_blocks(
     return blocks
 
 
-def _check_row_resolution(A: np.ndarray, atol: float = 1e-9) -> None:
+def _check_row_resolution(A: np.ndarray, atol: float = _CHECK_ATOL) -> None:
     r"""Check (RR) on every populated row of ``A[p_in, p_out, bond_L, bond_R]``.
 
     The stored block is the transpose of the operator,
@@ -586,7 +597,7 @@ def _combined_readout_sites(
     return sites
 
 
-def _check_combined_readout_cascade(sites: list[np.ndarray], atol: float = 1e-9) -> None:
+def _check_combined_readout_cascade(sites: list[np.ndarray], atol: float = _CHECK_ATOL) -> None:
     """Check (RR) on every row of every combined-readout cascade site.
 
     Same completeness and cross-orthogonality residuals as
@@ -820,7 +831,9 @@ def _matrix_unit_boundary(m: int, rng: np.random.Generator) -> np.ndarray:
     return l_vec
 
 
-def _check_fusion_closure_general(y: np.ndarray, gamma: np.ndarray, atol: float = 1e-9) -> None:
+def _check_fusion_closure_general(
+    y: np.ndarray, gamma: np.ndarray, atol: float = _CHECK_ATOL
+) -> None:
     r"""Check (FC) for a skeleton with general structure constants ``gamma``.
 
     The condition is ``y[u]^dagger y[v] == sum_w gamma[w,u,v] y[w]`` for all
@@ -854,7 +867,7 @@ def _check_fusion_closure_general(y: np.ndarray, gamma: np.ndarray, atol: float 
                 )
 
 
-def _check_fusion_closure(y: np.ndarray, atol: float = 1e-9) -> None:
+def _check_fusion_closure(y: np.ndarray, atol: float = _CHECK_ATOL) -> None:
     """Check (FC) for the cyclic skeleton: ``y[u]^dag y[v] == y[(v-u) mod M]``.
 
     Parameters
@@ -879,7 +892,7 @@ def _check_fusion_closure(y: np.ndarray, atol: float = 1e-9) -> None:
                 )
 
 
-def _check_nested_flag_closure(y: np.ndarray, atol: float = 1e-9) -> None:
+def _check_nested_flag_closure(y: np.ndarray, atol: float = _CHECK_ATOL) -> None:
     """Check (FC) for the nested-flag skeleton: ``y[u]^dag y[v] == y[max(u,v)]``.
 
     Parameters
@@ -906,7 +919,7 @@ def _check_nested_flag_closure(y: np.ndarray, atol: float = 1e-9) -> None:
 
 
 def _check_matrix_unit_closure(
-    y: np.ndarray, labels: list[tuple[int, int] | None], atol: float = 1e-9
+    y: np.ndarray, labels: list[tuple[int, int] | None], atol: float = _CHECK_ATOL
 ) -> None:
     r"""Check (FC) for the matrix-units skeleton with identity channel.
 
@@ -957,7 +970,7 @@ def _check_matrix_unit_closure(
                 )
 
 
-def _check_channel_span_full_rank(y: np.ndarray, n_channels: int, tol: float = 1e-9) -> None:
+def _check_channel_span_full_rank(y: np.ndarray, n_channels: int, tol: float = _CHECK_ATOL) -> None:
     """Check that the ``n_channels`` channels are linearly independent in ``M_d(C)``.
 
     Linear independence ensures that the requested bond dimension is not
@@ -1012,7 +1025,7 @@ def _flat_spectrum_boundary(n_channels: int, rng: np.random.Generator) -> np.nda
     return np.fft.ifft(np.exp(1j * theta)).astype(complex)
 
 
-def _check_flat_spectrum(l_vec: np.ndarray, atol: float = 1e-9) -> None:
+def _check_flat_spectrum(l_vec: np.ndarray, atol: float = _CHECK_ATOL) -> None:
     """Check (B) for the cyclic skeleton: ``|DFT(l)[k]| = 1`` for every ``k``.
 
     Parameters
@@ -1213,7 +1226,7 @@ def _finite_group_table(group: str, n: int | list[int] = 0):
     raise ValueError(f"Unknown group {group!r}; expected 'Zn', 'Zn_product' or 'S3'.")
 
 
-def _check_group_representation(elements, mult, irreps, atol: float = 1e-9) -> None:
+def _check_group_representation(elements, mult, irreps, atol: float = _CHECK_ATOL) -> None:
     r"""Check that every irrep is unitary and a homomorphism.
 
     The homomorphism condition is :math:`\rho(g)\rho(h)=\rho(gh)` for all
@@ -1360,7 +1373,7 @@ def _group_fourier_boundary(elements, irreps, rng: np.random.Generator) -> np.nd
 
 
 def _check_group_boundary(
-    l_vec: np.ndarray, elements, mult, idx, identity, atol: float = 1e-9
+    l_vec: np.ndarray, elements, mult, idx, identity, atol: float = _CHECK_ATOL
 ) -> None:
     """Check (B) by the direct double sum, independent of the Fourier construction.
 
@@ -1600,19 +1613,10 @@ class MPUGenerator:
 
     Every generation method returns ``(tensors, l_vec, r_vec)``: a list of
     site tensors ``A[p_in, p_out, bond_L, bond_R]`` and two boundary vectors
-    such that
-
-    .. math::
-        U_N = \sum_{v_0,\dots,v_N} \ell_{v_0} r_{v_N}\,
-              A[v_0,v_1]\otimes\cdots\otimes A[v_{N-1},v_N]
-
-    is unitary for every :math:`N` (Modes I, II and grafted: proved from the
-    local certificate; Mode II-B: validated numerically, see
-    :meth:`fusion_bond_resolved`). The certificate is an algebraic identity of
-    the local data (row resolution for Mode I, fusion closure plus an
-    admissible boundary for Mode II), not a finite-:math:`N` test. With
-    ``verify=True`` it is re-checked numerically where a check exists (see the
-    module docstring).
+    whose contraction (module docstring) is unitary for every :math:`N`. The
+    certificate behind this (proved for Modes I, II and grafted, validated
+    numerically for Mode II-B) and the numerical checks run with
+    ``verify=True`` are described in the module docstring.
 
     In this class every site draws its own Haar dressing;
     :class:`~mpu_generators.uniform.UniformMPUGenerator` draws one site tensor
@@ -1625,10 +1629,9 @@ class MPUGenerator:
         Seed of the ``numpy.random.default_rng`` created at every call, so
         calling a method twice with the same arguments returns the same MPU.
     verify : bool
-        Re-check the algebraic certificate of the mode numerically at
-        construction time (where a check exists, see the module docstring), and
-        run the numerical safeguards of :func:`_finalize_chain` on the
-        assembled chain.
+        Re-check the certificate of the mode numerically where a check exists
+        (table in the module docstring) and run the safeguards of
+        :func:`_finalize_chain` on the assembled chain.
     coherent_in_n : bool
         ``True`` (default): one random family for all chain lengths. The
         generator is seeded with ``seed`` alone, so for uniform generators the
@@ -1838,20 +1841,19 @@ class MPUGenerator:
         blocking : int or "auto"
             Physical sites merged into each returned tensor. ``"auto"`` picks
             the smallest size satisfying Assumption 1 (see :meth:`_generate`).
-            With ``readout``, ``blocking`` must divide ``m`` (see below).
+            With ``readout``, ``blocking`` must divide ``m`` (see ``readout``).
         max_blocking : int
             Largest block size tried by ``blocking="auto"``.
         readout : list of int, optional
-            Combined readout over the vertices in ``readout`` (thesis
-            ``cor:mode1-readout``, ``rem:cascaded-readout``). Appends
-            :math:`m=\max(1,\lceil\log_d |\mathrm{readout}|\rceil)` sites to
-            the chain, a :math:`d`-ary tree of (RR) rows that resolves every
-            listed vertex (:func:`_combined_readout_sites`), and
-            :math:`\ell=(1)`. These sites come in addition to ``n_sites`` and
-            are blocked with the rest. ``blocking`` must therefore divide both
-            ``n_sites`` and ``n_sites + m``, hence ``m``: for ``m = 1`` only
-            ``blocking = 1`` works, and ``blocking="auto"`` only tries
-            divisors of ``m``. Default: single-vertex readout
+            Combined readout over the listed vertices (thesis
+            ``cor:mode1-readout``, ``rem:cascaded-readout``): appends
+            :math:`m=\max(1,\lceil\log_d |\mathrm{readout}|\rceil)` sites, a
+            :math:`d`-ary tree of (RR) rows that resolves every listed vertex
+            (:func:`_combined_readout_sites`), with :math:`\ell=(1)`. They come
+            in addition to ``n_sites`` and are blocked with the rest, so
+            ``blocking`` must divide ``n_sites`` and ``n_sites + m``, hence
+            ``m`` (``m = 1``: only ``blocking = 1``; ``"auto"`` only tries
+            divisors of ``m``). Default: single-vertex readout
             :math:`\ell=e_0`.
         digraph : dict, optional
             Hand-picked digraph ``{v: [targets]}`` on the vertices
@@ -1897,14 +1899,12 @@ class MPUGenerator:
         -----
         Certified algebraically: every row of every drawn tensor (and of the
         readout cascade) satisfies (RR) for any Haar draw and any rank
-        partition. With ``verify=True`` this is re-checked numerically at an
-        absolute tolerance of ``1e-9`` (:func:`_check_row_resolution`,
-        :func:`_check_combined_readout_cascade`); in the uniform case only the
-        single repeated tensor is checked. The non-default choices of
+        partition. The numerical re-check with ``verify=True``
+        (:func:`_check_row_resolution`, :func:`_check_combined_readout_cascade`)
+        is described in the module docstring. The non-default choices of
         ``digraph``, ``out_degree`` and ``ranks`` define different ensembles
         on the same certified class, so statistics are not comparable with the
-        default one. The chain-level safeguards of :func:`_finalize_chain` are
-        independent numerical checks.
+        default one.
         """
         if digraph is not None:
             digraph = _check_digraph(digraph, bond_dim, d)
@@ -1976,8 +1976,9 @@ class MPUGenerator:
         :math:`U_N=\sum_u \ell_u\,y_u^{\otimes N}` is unitary for every
         :math:`N` (thesis ``thm:mode2-unitarity``). Each site conjugates all
         channels by one Haar unitary (the dressing), drawn per site, or once
-        in the uniform case. The skeletons, their dimension constraints and
-        the checks run with ``verify=True`` are listed in Notes.
+        in the uniform case. The skeletons and their dimension constraints are
+        tabulated in Notes; the checks run with ``verify=True`` are in the
+        module docstring.
 
         Parameters
         ----------
@@ -2014,42 +2015,40 @@ class MPUGenerator:
 
         Notes
         -----
-        Skeletons (channels; boundary; constraint):
+        Skeletons (builders in parentheses):
 
-        - ``"cyclic"``: :math:`\mathbb Z_M` characters
-          (:func:`_cyclic_character_channels`); flat-Fourier boundary
-          (:func:`_flat_spectrum_boundary`); ``bond_dim <= d``. It is a
-          group-convolution skeleton only when ``bond_dim`` divides ``d``.
-        - ``"nested_flag"``: nested projectors with closure :math:`\max(u,v)`
-          (:func:`_nested_flag_channels`); boundary on a flat torus
-          (:func:`_nested_flag_boundary`); ``bond_dim <= d``. Contains the
-          MCZ / diagonal-phase family.
-        - ``"matrix_units"``: identity channel plus :math:`m^2` matrix units
-          :math:`y_{(i,j)}=w_iw_j^\dagger` (:func:`_matrix_unit_channels`);
-          boundary from a Haar :math:`U(m)` (:func:`_matrix_unit_boundary`);
-          ``bond_dim = 1 + m**2`` with ``m <= d`` (``bond_dim`` = 2, 5, 10,
-          17, ...).
-        - ``"group"``: left-regular representation of a finite group
-          (:func:`_group_regular_channels`); boundary on the Peter-Weyl
-          manifold :math:`\prod_\rho U(d_\rho)`
-          (:func:`_group_fourier_boundary`); ``d = bond_dim = |G|``.
-          ``group="Zn_product"`` covers every finite abelian group and
-          ``group="S3"`` the smallest non-abelian one.
+        ================  ================================================  ======================
+        ``skeleton``      Channels; boundary (B)                            Constraint
+        ================  ================================================  ======================
+        ``cyclic``        :math:`\mathbb Z_M` characters                    ``bond_dim <= d``
+                          (:func:`_cyclic_character_channels`);
+                          flat Fourier spectrum
+                          (:func:`_flat_spectrum_boundary`)
+        ``nested_flag``   nested projectors, closure                        ``bond_dim <= d``
+                          :math:`\max(u,v)`
+                          (:func:`_nested_flag_channels`);
+                          flat torus (:func:`_nested_flag_boundary`)
+        ``matrix_units``  identity and :math:`m^2` matrix units             ``bond_dim = 1+m**2``,
+                          :math:`y_{(i,j)}=w_iw_j^\dagger`                  ``m <= d``
+                          (:func:`_matrix_unit_channels`);
+                          Haar :math:`U(m)`
+                          (:func:`_matrix_unit_boundary`)
+        ``group``         left-regular representation of a                  ``d = bond_dim = |G|``
+                          finite group (:func:`_group_regular_channels`);
+                          Peter-Weyl manifold
+                          :math:`\prod_\rho U(d_\rho)`
+                          (:func:`_group_fourier_boundary`)
+        ================  ================================================  ======================
+
+        ``cyclic`` is a group-convolution skeleton only when ``bond_dim``
+        divides ``d``. ``nested_flag`` contains the MCZ / diagonal-phase
+        family. ``matrix_units`` needs ``bond_dim`` = 2, 5, 10, 17, ...
+        ``group="Zn_product"`` covers every finite abelian group and
+        ``group="S3"`` the smallest non-abelian one.
 
         Certified algebraically: (FC) and (B) hold for the construction of each
-        skeleton. With ``verify=True`` the following are re-checked
-        numerically at absolute tolerance ``1e-9``:
-
-        - ``cyclic``: (FC) and (B) (flat spectrum);
-        - ``group``: the representation property of the irreps, (FC) and (B)
-          (direct double sum);
-        - ``nested_flag``, ``matrix_units``: (FC) only. There is no check of
-          (B): the boundary is constructed on the admissible manifold;
-        - all channel families: linear independence of the channels (skipped
-          for ``matrix_units`` when ``m == d``, where it fails by design).
-
-        The chain-level safeguards of :func:`_finalize_chain` are independent
-        numerical checks.
+        skeleton. The numerical re-check with ``verify=True`` is listed per
+        skeleton in the module docstring.
         """
         if skeleton == "cyclic":
             if bond_dim > d:

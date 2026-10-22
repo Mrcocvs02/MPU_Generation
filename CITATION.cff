@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: "If you use mpu_generators, please cite the software and the constructions it implements."
+title: "mpu_generators: certified random generators of exact Matrix Product Unitaries"
+version: 0.3.0
+date-released: 2026-10-22
+license: MIT
+repository-code: "https://github.com/Mrcocvs02/MPU_Generation"
+authors:
+  - family-names: Vassallo
+    given-names: Marco
+    affiliation: "Department of Physics and Astronomy \"A. Righi\", University of Bologna"
+keywords:
+  - matrix product unitaries
+  - tensor networks
+  - random unitary ensembles
+  - quantum cellular automata
+references:
+  - type: thesis
+    title: "Beyond-QCA MPUs: Generation, Certification, and Circuit Synthesis"
+    authors:
+      - family-names: Vassallo
+        given-names: Marco
+    thesis-type: "Master's thesis"
+    institution:
+      name: "Alma Mater Studiorum - Università di Bologna"
+    year: 2026
+    url: "https://amslaurea.unibo.it/id/eprint/39893"
+    notes: "The published version contains known errors, listed in docs/thesis_errata.md of the TreeMPU repository."
+  - type: article
+    title: "Matrix-Product Unitaries: Beyond Quantum Cellular Automata"
+    authors:
+      - family-names: Styliaris
+        given-names: G.
+      - family-names: Trivedi
+        given-names: R.
+      - family-names: "Pérez-García"
+        given-names: D.
+      - family-names: Cirac
+        given-names: J. I.
+    journal: "Quantum"
+    volume: 9
+    start: 1645
+    year: 2025
+    doi: "10.22331/q-2025-01-16-1645"

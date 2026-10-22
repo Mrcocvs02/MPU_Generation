@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install "TreeMPU @ git+https://github.com/Mrcocvs02/TreeMPU.git"
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check mpu_generators
+      - name: Tests
+        env:
+          OMP_NUM_THREADS: "1"
+        run: pytest -q

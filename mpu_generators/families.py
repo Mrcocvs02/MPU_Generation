@@ -64,16 +64,12 @@ def build_family(
     ----------
     name : str
         A key of :data:`FAMILIES`.
-    d : int
-        Local physical dimension (default 2). Ignored by the families with a
-        fixed ``d``: ``fusion_group_S3`` (6), ``fusion_group_Zn_product`` (8)
-        and ``fusion_bond_resolved_lee_yang`` (5).
-    bond_dim : int
-        Bond dimension (default 2). For ``grafted`` the bond dimension used
-        is ``2 * max(1, bond_dim // 2)``. Ignored by the families with a
-        fixed bond dimension (``fusion_group_S3``, ``fusion_group_Zn_product``,
-        ``fusion_bond_resolved_lee_yang``); for ``fusion_group_Zn`` it must
-        equal ``d``.
+    d, bond_dim : int
+        Local dimension and bond dimension (default 2 each). Both are ignored
+        by the families with fixed values: ``fusion_group_S3`` (6, 6),
+        ``fusion_group_Zn_product`` (8, 8) and ``fusion_bond_resolved_lee_yang``
+        (5, 14). ``grafted`` uses ``2 * max(1, bond_dim // 2)``;
+        ``fusion_group_Zn`` needs ``bond_dim == d``.
     seed : int
         Generator seed (default 0).
     n_sites : int, optional
@@ -84,16 +80,15 @@ def build_family(
         :class:`~mpu_generators.base.MPUGenerator`).
     **options
         Keyword arguments forwarded unchanged to the generator method of the
-        family. They are merged after the size argument, which is
-        ``n_sites`` if given and otherwise the default ``n_blocks=2``; so
-        ``n_blocks`` in ``options`` replaces only that default. Giving
-        ``n_blocks`` together with ``n_sites``, or ``n_sites`` without
-        replacing the default, passes both to the generator, which raises
-        ``ValueError``. ``options`` must not repeat an argument fixed by the
-        family (``blocking``, ``max_blocking``, ``skeleton``, ``group``,
-        ``group_n``, ``d``, ``bond_dim``). Typical use: ``digraph``,
-        ``out_degree``, ``ranks`` and ``readout`` for the Mode I families,
-        ``n_blocks`` for all of them.
+        family, merged after the size argument (``n_sites`` if given,
+        otherwise the default ``n_blocks=2``); ``n_blocks`` in ``options``
+        thus replaces only that default. If both ``n_sites`` and ``n_blocks``
+        reach the generator (``n_blocks`` with ``n_sites``, or ``n_sites`` in
+        ``options`` while the default is in place), it raises ``ValueError``.
+        Must not repeat an argument fixed by the family (``blocking``,
+        ``max_blocking``, ``skeleton``, ``group``, ``group_n``, ``d``,
+        ``bond_dim``). Typical use: ``digraph``, ``out_degree``, ``ranks`` and
+        ``readout`` for the Mode I families, ``n_blocks`` for all of them.
 
     Returns
     -------
@@ -122,13 +117,13 @@ def build_family(
     Mode I families use ``blocking="auto", max_blocking=2`` (the smallest
     block size, up to 2, whose chain has full-rank boundary operators at
     every cut, ``TreeMPU.utils.satisfies_assumption_1``), all others
-    ``blocking=1``, as in the thesis production runs. The generator runs with
-    ``verify=True``, but not every chain is algebraically certified:
-    Mode I checks (RR); ``grafted`` checks (RR), (FC) and the flat-spectrum
-    boundary; the Mode II skeletons check (FC), and the boundary condition
-    (B) only for ``cyclic`` (flat spectrum) and ``group``, not for
-    ``nested_flag`` and ``matrix_units``; the Lee-Yang family has no
-    algebraic check at all. For every family unitarity is
+    ``blocking=1``, as in the thesis production runs.
+
+    The generator runs with ``verify=True``. Which algebraic certificates are
+    re-checked differs per family (table "Certificates and checks" in the
+    docstring of :mod:`mpu_generators.base`): the boundary condition (B) is
+    not checked for ``nested_flag`` and ``matrix_units``, and the Lee-Yang
+    family has no algebraic check at all. For every family unitarity is
     validated numerically: normalization for any ``N`` and a dense check to
     tolerance when ``d ** N <= 2 ** 10``.
     """

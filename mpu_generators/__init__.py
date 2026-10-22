@@ -19,7 +19,7 @@ from .base import MPUGenerator, generate_random_mpu
 from .families import FAMILIES, build_family
 from .uniform import UniformMPUGenerator
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "FAMILIES",

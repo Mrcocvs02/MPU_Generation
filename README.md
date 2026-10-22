@@ -40,6 +40,8 @@ Two classes, sharing one construction:
 - [Testing](#testing)
 - [Reference](#reference)
 - [Status](#status)
+- [Roadmap](#roadmap)
+- [AI usage disclosure](#ai-usage-disclosure)
 - [License](#license)
 
 ## Key features
@@ -422,8 +424,11 @@ reproducibility.
 
 The theory implemented here is derived in the author's master's thesis,
 *Beyond-QCA MPUs: Generation, Certification, and Circuit Synthesis*
-(M. Vassallo, University of Bologna, 2026; [AMS Laurea](https://amslaurea.unibo.it/)
-once published), and in the manuscript "Tensor-First Sampling of Exact
+(M. Vassallo, University of Bologna, 2026;
+[AMS Laurea](https://amslaurea.unibo.it/id/eprint/39893), published with
+known errors listed in
+[docs/thesis_errata.md](https://github.com/Mrcocvs02/TreeMPU/blob/main/docs/thesis_errata.md)),
+and in the manuscript "Tensor-First Sampling of Exact
 Matrix-Product Unitaries" (in preparation). It builds on:
 
 > G. Styliaris, R. Trivedi, J. I. Cirac, "Quantum Circuits for
@@ -447,9 +452,37 @@ Matrix-Product Unitaries" (in preparation). It builds on:
 
 ## Status
 
-Alpha (0.2.0). Used as a submodule of
+Alpha (0.3.0). Used as a submodule of
 [`TreeMPU`](https://github.com/Mrcocvs02/TreeMPU). All
 mechanisms listed above are implemented and covered by the test suite.
+
+## Roadmap
+
+Not implemented yet (contributions welcome):
+
+- **Group convolution for arbitrary finite groups** from user-supplied
+  multiplication tables and irreducible representations (`Zn`, `Zn_product`
+  and `S3` are implemented).
+- **A generic Mode II boundary sampler** by lifting a unitary element of the
+  fused-channel algebra (exponential of a Hermitian element) through the
+  injective map $\Gamma_{N_0}$; requires checking injectivity at some $N_0$.
+- **New skeletons**: $\mathrm{Fun}(G)$ (diagonal, unit-modulus entries),
+  Brandt, $H_8$, and a generator for periodic boundaries with a prescribed
+  GNVW index.
+- **Relaxing the `cyclic` constraint** `bond_dim <= d` to "$\Gamma_{N_0}$ injective
+  for some small $N_0$".
+- **Mode II-B**: an algebraic certificate (null-complement and boundary
+  compatibility conditions of the thesis) beyond the intertwiner (I).
+- **Analysis layer**: Mode II causal multipliers and the Mode I endpoint
+  transfer, currently only in the thesis production scripts.
+
+## AI usage disclosure
+
+Generative AI (Claude, Anthropic) was used during the development of this
+package for guided code generation, testing, analysis and formatting. All
+development was directed by the author, who is responsible for the contents
+of this repository; the behaviour of the code is validated by the test suite
+and by the numerical verifications described in the documentation.
 
 ## License
 
