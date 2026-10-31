@@ -31,14 +31,15 @@ With ``verify=True`` the certificate of each construction is re-checked
 numerically at an absolute tolerance of ``1e-9`` on every sampled tensor
 (once for the repeated tensor in the uniform case); this table is the single
 reference for the per-mode checks. "Independence" is the linear independence of
-the channels :math:`y_u`, skipped for ``matrix_units`` when ``m == d`` (where
-it fails by design).
+the channels :math:`y_u`, skipped for ``matrix_units`` when ``m == d`` and for
+``cyclic`` when ``bond_dim > d`` (where it fails by design).
 
 ==============================  ==========================================================
 Construction                    Checks run with ``verify=True``
 ==============================  ==========================================================
 Mode I (``branching``)         (RR) on every row, also of the readout cascade
-``fusion``, ``cyclic``          (FC); (B) flat Fourier spectrum; independence
+``fusion``, ``cyclic``          (FC); (B) flat Fourier spectrum; independence (if
+                                ``bond_dim <= d``)
 ``fusion``, ``group``           irrep representation property; (FC); (B) by the direct
                                 double sum; independence
 ``fusion``, ``nested_flag``     (FC); independence. (B) is not checked: the boundary is
@@ -87,6 +88,7 @@ Examples
 from __future__ import annotations
 
 import math
+import warnings
 from itertools import permutations, product
 
 import numpy as np
@@ -2013,6 +2015,13 @@ class MPUGenerator:
         RuntimeError
             If ``verify`` is true and a numerical check fails.
 
+        Warns
+        -----
+        UserWarning
+            If ``skeleton="cyclic"``, ``bond_dim > d`` and the chain has fewer
+            than ``ceil((bond_dim - 1) / (d - 1))`` sites on each side of its
+            middle cut, so that the bond dimension is not reached (see Notes).
+
         Notes
         -----
         Skeletons (builders in parentheses):
@@ -2020,7 +2029,7 @@ class MPUGenerator:
         ================  ================================================  ======================
         ``skeleton``      Channels; boundary (B)                            Constraint
         ================  ================================================  ======================
-        ``cyclic``        :math:`\mathbb Z_M` characters                    ``bond_dim <= d``
+        ``cyclic``        :math:`\mathbb Z_M` characters                    none (see below)
                           (:func:`_cyclic_character_channels`);
                           flat Fourier spectrum
                           (:func:`_flat_spectrum_boundary`)
@@ -2041,8 +2050,19 @@ class MPUGenerator:
         ================  ================================================  ======================
 
         ``cyclic`` is a group-convolution skeleton only when ``bond_dim``
-        divides ``d``. ``nested_flag`` contains the MCZ / diagonal-phase
-        family. ``matrix_units`` needs ``bond_dim`` = 2, 5, 10, 17, ...
+        divides ``d``. For ``bond_dim`` :math:`M>d` the channels are
+        :math:`d\times d` matrices diagonal in one basis, hence linearly
+        dependent, but the chain is still exactly unitary (the autocorrelation
+        of a flat-spectrum ``l_vec`` is :math:`\delta_{w,0}`) and equals
+        :math:`R\,e^{i\varphi(Q \bmod M)}R^\dagger` with :math:`Q` the total
+        charge. Its operator-Schmidt rank across a cut is :math:`M` (for a
+        generic boundary) once each side holds at least
+        :math:`\lceil (M-1)/(d-1)\rceil` sites, because then the blocked
+        channels :math:`y_g^{\otimes L}` are independent (Vandermonde on the
+        values of :math:`Q`); shorter blocks do not satisfy Assumption 1, so
+        use ``blocking="auto"`` or an explicit block of that size. This is
+        the only check skipped for ``bond_dim > d``. ``nested_flag`` contains
+        the MCZ / diagonal-phase family. ``matrix_units`` needs ``bond_dim`` = 2, 5, 10, 17, ...
         ``group="Zn_product"`` covers every finite abelian group and
         ``group="S3"`` the smallest non-abelian one.
 
@@ -2051,10 +2071,23 @@ class MPUGenerator:
         skeleton in the module docstring.
         """
         if skeleton == "cyclic":
-            if bond_dim > d:
-                raise ValueError(
-                    f"skeleton='cyclic' needs d >= bond_dim (got d={d}, bond_dim={bond_dim})."
-                )
+            # Any bond_dim; for bond_dim > d the channels are dependent by design
+            # (see Notes) and a short chain cannot reach the requested bond dimension.
+            n_phys = n_sites
+            if n_phys is None and n_blocks is not None and isinstance(blocking, int):
+                n_phys = n_blocks * blocking
+            if bond_dim > d >= 2 and n_phys is not None:
+                needed = -(-(bond_dim - 1) // (d - 1))  # ceil((bond_dim - 1) / (d - 1))
+                if n_phys // 2 < needed:
+                    reached = min(bond_dim, (n_phys // 2) * (d - 1) + 1)
+                    warnings.warn(
+                        f"skeleton='cyclic' with bond_dim={bond_dim} > d={d} needs at least "
+                        f"{needed} sites on each side of a cut; with {n_phys} sites the "
+                        f"operator-Schmidt rank is at most {reached}, so canonical form "
+                        f"reduces the bond dimension.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
         elif skeleton == "nested_flag":
             if bond_dim > d:
                 raise ValueError(
@@ -2107,7 +2140,8 @@ class MPUGenerator:
                     y = _cyclic_character_channels(d, bond_dim, r)
                     if self.verify:
                         _check_fusion_closure(y)
-                        _check_channel_span_full_rank(y, bond_dim)
+                        if bond_dim <= d:
+                            _check_channel_span_full_rank(y, bond_dim)
                     A = np.zeros((d, d, bond_dim, bond_dim), dtype=complex)
                     for g in range(bond_dim):
                         A[:, :, g, g] = y[g].T

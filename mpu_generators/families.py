@@ -39,7 +39,7 @@ FAMILIES: dict[str, str] = {
     "branching_uniform": "Mode I, translation invariant (UniformMPUGenerator.branching)",
     "branching_general": "Mode I, site dependent (MPUGenerator.branching)",
     "grafted": "Grafted composition (UniformMPUGenerator.grafted)",
-    "fusion_cyclic": "Mode II, cyclic skeleton (requires bond_dim <= d)",
+    "fusion_cyclic": "Mode II, cyclic skeleton (any bond_dim; see MPUGenerator.fusion for bond_dim > d)",
     "fusion_nested_flag": "Mode II, nested flags (requires bond_dim <= d)",
     "fusion_matrix_units": "Mode II, matrix units (bond_dim = 1 + m^2, m <= d)",
     "fusion_group_Zn": "Mode II, group convolution Z_n (requires d = bond_dim = n)",

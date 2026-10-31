@@ -23,6 +23,14 @@ tests only:
   example of the paper, :math:`A[p,q]=P_qX^p`, :math:`\ell=e_0`);
   ``clock`` returns a chain of on-site unitaries that cycle with period
   :math:`D` along the chain, the other two are in general entangling;
+* :meth:`~UniformMPUGenerator.shared_basis_automaton` and
+  :meth:`~UniformMPUGenerator.cayley_automaton` are Mode I tensors in which
+  every vertex reads the site in the *same* basis: a letter read advances a
+  counter (the vertex) by a fixed map, and a unitary attached to the vertex
+  acts on the site. They contain ``group_automaton`` (basis = computational,
+  letters = all group elements) and Mode II ``cyclic`` (identity unitaries,
+  nontrivial final phases) as special cases; the tail of operator spreading
+  does not decay when the maps are permutations (see the method notes);
 * :meth:`~UniformMPUGenerator.self_direction`,
   :meth:`~UniformMPUGenerator.resonant` and
   :meth:`~UniformMPUGenerator.multi_symbol` give
@@ -43,6 +51,7 @@ import numpy as np
 from .base import (
     MPUGenerator,
     _check_row_resolution,
+    _finite_group_table,
     _haar_unitary,
     _mode1_site_tensor,
     _random_out_regular_digraph,
@@ -52,6 +61,8 @@ from .base import (
 #: :meth:`UniformMPUGenerator.invariant_subspace`; any value works, a modest
 #: one keeps the tensor well conditioned.
 _JUNK_SCALE = 0.3
+#: Frobenius-norm tolerance for accepting a user-supplied matrix as unitary.
+_UNITARY_ATOL = 1e-9
 
 
 def _rng(seed) -> np.random.Generator:
@@ -202,6 +213,246 @@ class UniformMPUGenerator(MPUGenerator):
         l_vec[idx[identity]] = 1.0
         r_vec = np.ones(D, dtype=complex)
         return A, l_vec, r_vec
+
+    # --- shared reading basis (counter automata) ---
+
+    def shared_basis_automaton(
+        self,
+        transitions: list[list[int]] | None = None,
+        D: int = 4,
+        d: int = 2,
+        R: np.ndarray | None = None,
+        V: list[np.ndarray] | None = None,
+        final_phases: np.ndarray | None = None,
+        start: int = 0,
+        seed: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        r"""Return a Mode I counter automaton that reads every site in one basis.
+
+        Not part of the thesis or paper; a special case of Mode I row
+        resolution (with a diagonal phase on the right boundary) in which the
+        input-side projectors do not depend on the vertex.
+
+        Let :math:`R=(r_0,\dots,r_{d-1})` be a unitary (the reading basis),
+        :math:`V_v` a unitary attached to vertex :math:`v`, and
+        :math:`\sigma_a:\{0..D-1\}\to\{0..D-1\}` the move caused by letter
+        :math:`a`. The tensor is
+
+        .. math::
+            A[v,\sigma_a(v)] \mathrel{+}= V_v\,|r_a\rangle\langle r_a| ,
+
+        with :math:`\ell=e_{\rm start}` and
+        :math:`r_u=e^{i\varphi_u}`. On the basis state
+        :math:`|r_{x_1}\cdots r_{x_N}\rangle` the chain acts as
+
+        .. math::
+            U_N\,|r_{x_1}\cdots r_{x_N}\rangle
+            = e^{i\varphi_{v_N}}\,(V_{v_0}r_{x_1})\otimes\cdots\otimes(V_{v_{N-1}}r_{x_N}),
+            \qquad v_j=\sigma_{x_j}(v_{j-1}),
+
+        a single path with a unimodular amplitude per input basis vector.
+        Two inputs that first differ at site :math:`j` have the same
+        :math:`v_{j-1}` and are mapped to orthogonal vectors on site
+        :math:`j`, so the images are orthonormal: :math:`U_N` is unitary for
+        every :math:`N`, :math:`R`, :math:`V_v`, :math:`\varphi` and every
+        choice of the maps :math:`\sigma_a` (not only permutations).
+
+        Parameters
+        ----------
+        transitions : list of list of int, optional
+            ``transitions[a][v]`` is :math:`\sigma_a(v)`, ``d`` lists of
+            length ``D`` with entries in ``0..D-1``. Default: the lazy ring,
+            :math:`\sigma_a(v)=v+a \bmod D`.
+        D, d : int
+            Bond and physical dimension (``D`` is taken from ``transitions``
+            if given, so that ``d`` is then ``len(transitions)``).
+        R : ndarray, optional
+            Reading basis, a unitary of shape ``(d, d)`` (Haar if omitted).
+        V : list of ndarray, optional
+            ``D`` unitaries of shape ``(d, d)`` (independent Haar if omitted).
+            With ``V = [identity] * D`` and non-trivial ``final_phases`` the
+            chain is :math:`R\,e^{i\varphi(\text{counter})}R^\dagger`
+            (Mode II cyclic for the ring).
+        final_phases : ndarray, optional
+            Phases :math:`\varphi_u`, length ``D`` (default zero, so that
+            :math:`r=(1,\dots,1)`).
+        start : int
+            Initial vertex (:math:`\ell=e_{\rm start}`).
+        seed : int, optional
+            Overrides the generator seed for this call. Draw order: ``R``,
+            then ``V[0], ..., V[D-1]``.
+
+        Returns
+        -------
+        A, l_vec, r_vec : ndarray
+            ``A`` of shape ``(d, d, D, D)``; ``l_vec = e_start`` and
+            ``r_vec = exp(1j * final_phases)``.
+
+        Raises
+        ------
+        ValueError
+            If ``transitions``, ``R``, ``V``, ``final_phases`` or ``start``
+            have the wrong shape or range, or ``R`` / ``V`` are not unitary.
+
+        Notes
+        -----
+        *Permutations versus general maps.* If every :math:`\sigma_a` is a
+        permutation (a group automaton when they generate a group), two
+        different paths never merge, and a change of one input letter changes
+        the vertex of every later site; with :math:`V_v` distinct the
+        operator :math:`U_N P_0U_N^\dagger` keeps a weight that does not
+        decay with the distance, in one direction (towards larger site
+        index). When the basis is instead drawn independently at each
+        vertex, as by :meth:`~mpu_generators.base.MPUGenerator.branching`,
+        the weight outside a window of radius :math:`R` decays with
+        :math:`R` (numerically; no analytic rate is claimed here). This is a
+        property of the operator, not of the cost of :mod:`TreeMPU`: the
+        merge-tree synthesis depends only on :math:`\chi`, :math:`d` and the
+        conditioning number.
+
+        The chain is a one-directional counter automaton, so it is not
+        invariant under reflection of the chain (unlike Mode II).
+
+        ``D > d`` is allowed (numerically, the ring with :math:`D>d` has
+        operator-Schmidt rank :math:`D` for long enough chains). If
+        Assumption 1 fails at one site, block the tensor with
+        :func:`TreeMPU.utils.block_mpu_tensors`, or use
+        ``boundary_mode1_exact=True`` in :class:`TreeMPU.UniformMPU` when
+        ``final_phases`` is zero.
+
+        Examples
+        --------
+        >>> gen = UniformMPUGenerator(seed=0)
+        >>> A, l_vec, r_vec = gen.shared_basis_automaton(D=4, d=2)
+        >>> A.shape
+        (2, 2, 4, 4)
+        """
+        rng = _rng(self.seed if seed is None else seed)
+        if transitions is None:
+            if D < 1 or d < 2:
+                raise ValueError(f"need D >= 1 and d >= 2; got D={D}, d={d}.")
+            transitions = [[(v + a) % D for v in range(D)] for a in range(d)]
+        else:
+            d = len(transitions)
+            D = len(transitions[0]) if d else 0
+            if d < 2 or D < 1 or any(len(t) != D for t in transitions):
+                raise ValueError("transitions must be d >= 2 lists of the same length D >= 1.")
+            if any(not (0 <= int(u) < D) for t in transitions for u in t):
+                raise ValueError(f"transitions entries must lie in 0..{D - 1}.")
+        if not 0 <= start < D:
+            raise ValueError(f"start={start} out of range for D={D}.")
+
+        def _unitary(M, name):
+            M = np.asarray(M, dtype=complex)
+            if M.shape != (d, d) or np.linalg.norm(M.conj().T @ M - np.eye(d)) > _UNITARY_ATOL:
+                raise ValueError(f"{name} must be a unitary of shape ({d}, {d}).")
+            return M
+
+        R = _haar_unitary(d, rng) if R is None else _unitary(R, "R")
+        if V is None:
+            V = [_haar_unitary(d, rng) for _ in range(D)]
+        else:
+            if len(V) != D:
+                raise ValueError(f"V must contain D={D} unitaries; got {len(V)}.")
+            V = [_unitary(Vv, "V[v]") for Vv in V]
+        phases = np.zeros(D) if final_phases is None else np.asarray(final_phases, dtype=float)
+        if phases.shape != (D,):
+            raise ValueError(f"final_phases must have shape ({D},); got {phases.shape}.")
+
+        A = np.zeros((d, d, D, D), dtype=complex)
+        for v in range(D):
+            for a in range(d):
+                ra = R[:, a : a + 1]
+                # Stored block is the transpose of the operator (out <- in).
+                A[:, :, v, int(transitions[a][v])] += (V[v] @ ra @ ra.conj().T).T
+        _check_row_resolution(A)
+        l_vec = np.zeros(D, dtype=complex)
+        l_vec[start] = 1.0
+        return A, l_vec, np.exp(1j * phases)
+
+    def cayley_automaton(
+        self,
+        group: str = "S3",
+        generators: list | None = None,
+        group_n: int | list[int] = 0,
+        R: np.ndarray | None = None,
+        V: list[np.ndarray] | None = None,
+        final_phases: np.ndarray | None = None,
+        seed: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        r"""Return a shared-basis automaton whose vertices are the elements of a group.
+
+        Not part of the thesis or paper. The letters are ``generators``
+        (physical dimension :math:`d` = their number) and reading letter
+        :math:`a` multiplies the vertex on the right, :math:`v\mapsto v\,g_a`;
+        the start vertex is the identity. This is
+        :meth:`shared_basis_automaton` on the Cayley graph, so
+        :math:`D=|G|` can exceed :math:`d` (for instance :math:`S_3` with a
+        transposition and a 3-cycle gives :math:`d=2`, :math:`D=6`).
+
+        Parameters
+        ----------
+        group : {"S3", "Zn", "Zn_product"}
+            Group, as in :meth:`~mpu_generators.base.MPUGenerator.fusion`.
+        generators : list, optional
+            Group elements (as listed by the group table: permutation tuples
+            for ``S3``, integers for ``Zn``, tuples for ``Zn_product``). At
+            least two are needed. Default for ``S3``: the first element of
+            order 2 and the first of order 3. Required for the other groups.
+        group_n : int or list of int
+            Order of ``Zn`` or factor orders of ``Zn_product``.
+        R, V, final_phases, seed
+            As in :meth:`shared_basis_automaton`.
+
+        Returns
+        -------
+        A, l_vec, r_vec : ndarray
+            As in :meth:`shared_basis_automaton`, with ``D = |G|``.
+
+        Raises
+        ------
+        ValueError
+            If ``generators`` is missing (for a group other than ``S3``), has
+            fewer than two elements, or contains a non-element.
+
+        Notes
+        -----
+        The generators are not required to generate the group; if they do
+        not, the reachable vertices form a subgroup coset structure and the
+        remaining vertices are unused. ``group_automaton`` is the case
+        ``generators`` = all elements, :math:`R=1` and :math:`V_g` = left
+        multiplication by :math:`g`.
+        """
+        elements, mult, _inv, identity, _irreps = _finite_group_table(group, group_n)
+        idx = {g: i for i, g in enumerate(elements)}
+        if generators is None:
+            if group != "S3":
+                raise ValueError("generators are required for groups other than 'S3'.")
+
+            def order(g):
+                k, h = 1, g
+                while h != identity:
+                    h, k = mult(h, g), k + 1
+                return k
+
+            generators = [
+                next(g for g in elements if order(g) == 2),
+                next(g for g in elements if order(g) == 3),
+            ]
+        if len(generators) < 2:
+            raise ValueError("need at least two generators (physical dimension d >= 2).")
+        for g in generators:
+            if g not in idx:
+                raise ValueError(f"{g!r} is not an element of the group {group!r}.")
+        transitions = [[idx[mult(h, g)] for h in elements] for g in generators]
+        return self.shared_basis_automaton(
+            transitions=transitions,
+            R=R,
+            V=V,
+            final_phases=final_phases,
+            start=idx[identity],
+            seed=seed,
+        )
 
     # --- single-tensor constructions (on-site products, embeddings) ---
 

@@ -5,6 +5,22 @@
 All default outputs are unchanged (bit for bit).
 
 ### Added
+- `UniformMPUGenerator.shared_basis_automaton` and `cayley_automaton`: Mode I
+  counter automata in which every vertex reads the site in one common basis
+  (lazy rings, Cayley graphs such as $S_3$ with two letters, final phases).
+  Unitary for every reading basis, vertex unitaries, phases and transition
+  maps; `group_automaton` and Mode II `cyclic` with `bond_dim == d` are
+  special cases (tested). With permutation maps the operator tail does not
+  decay towards larger site index, unlike the Haar-basis ring of `branching`
+  (numerical; see the README).
+- `fusion(skeleton="cyclic")` accepts `bond_dim > d` (roadmap item). The
+  chain is exactly unitary (flat-spectrum boundary), commutes with the total
+  charge and has operator-Schmidt rank `bond_dim` once each side holds
+  `ceil((bond_dim-1)/(d-1))` sites; use `blocking="auto"`. The linear
+  independence check of the single-site channels is skipped for
+  `bond_dim > d` (it cannot hold), and a `UserWarning` is issued when the
+  chain is too short to reach `bond_dim`. Outputs for `bond_dim <= d` are
+  unchanged.
 - `MPUGenerator.branching(digraph=..., out_degree=..., ranks=...)`: hand-picked
   or random digraphs and rank partitions for Mode I (random out-degree,
   uniform random composition of `d`, explicit `{vertex: [ranks]}`); every

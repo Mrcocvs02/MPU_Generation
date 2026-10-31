@@ -54,8 +54,8 @@ Two classes, sharing one construction:
   combined multi-vertex readout via an auxiliary cascade of sites.
 - **Mode II — `fusion`** (fusion closure): a bond-diagonal tensor whose
   channel matrices close under a fixed fusion rule. Four built-in
-  skeletons — `cyclic` ($\mathbb{Z}_M$ characters; a group convolution only
-  when $M$ divides $d$), `nested_flag` (shrinking-flag projectors, the
+  skeletons — `cyclic` ($\mathbb{Z}_M$ characters; any $M$, also $M>d$; a
+  group convolution only when $M$ divides $d$), `nested_flag` (shrinking-flag projectors, the
   diagonal-phase/MCZ-type family), `matrix_units` (identity channel + matrix
   units), and `group` (regular representation of a finite group, abelian or
   not; the construction applies to any finite group given its tables, and the
@@ -71,12 +71,13 @@ Two classes, sharing one construction:
   skeleton (a group convolution when the channel count divides $d$) — a
   product of two independently certified unitaries.
 - **Translationally-invariant-only mechanisms** (`UniformMPUGenerator`):
-  `clock`, `group_automaton`, `self_direction`, `resonant`,
-  `multi_symbol`, `invariant_subspace`, `degenerate_rows` — single-tensor
-  constructions that are not part of the thesis or paper and are validated by
-  the unit tests only: `clock`, `group_automaton` and `degenerate_rows` are
-  special cases of Mode I; `self_direction`, `resonant` and `multi_symbol`
-  give on-site product unitaries.
+  `clock`, `group_automaton`, `shared_basis_automaton`, `cayley_automaton`,
+  `self_direction`, `resonant`, `multi_symbol`, `invariant_subspace`,
+  `degenerate_rows` — single-tensor constructions that are not part of the
+  thesis or paper and are validated by the unit tests only: `clock`,
+  `group_automaton`, `shared_basis_automaton`, `cayley_automaton` and
+  `degenerate_rows` are special cases of Mode I; `self_direction`,
+  `resonant` and `multi_symbol` give on-site product unitaries.
 - **Mixing combinators** (`mixing.py`): `stack` (operator composition),
   `nest` (rank-$k$ invariant subspace), `capped_sum` (a capped sum of two
   unitary chains, unitary by (RR) of its readout row, thesis
@@ -243,7 +244,7 @@ factor satisfying Assumption 1, capped by `max_blocking`).
 | Method | Mode | Key parameters / constraints |
 |---|---|---|
 | `branching(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, readout=None, digraph=None, out_degree=None, ranks="balanced")` | I | `readout`: list of vertices for combined multi-vertex readout, any auxiliary dimension; it appends $m=\max(1,\lceil\log_d\lvert\text{readout}\rvert\rceil)$ sites, so `blocking` must divide both `n_sites` and `n_sites + m` (hence $m$); `digraph`: hand-picked `{v: [targets]}` (1 to `d` distinct targets per vertex, used at every site); `out_degree`: int or `"random"` (uniform in `1..min(d, bond_dim)` per vertex); `ranks`: `"balanced"`, `"random"` (uniform composition of `d`) or hand-picked `{v: [ranks]}` (needs `digraph`). Non-default choices are different ensembles on the same certified class. |
-| `fusion(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, skeleton="cyclic", group="Zn", group_n=3)` | II | `skeleton in {"cyclic","nested_flag","matrix_units","group"}`; `cyclic` and `nested_flag` need `bond_dim <= d` (`cyclic` is a group convolution only when `bond_dim` divides `d`); `matrix_units` needs `bond_dim = 1 + m**2` for integer `m <= d` (`bond_dim` = 2, 5, 10, 17, 26, ...); `group` needs `d = bond_dim = |G|` with `group in {"Zn","Zn_product","S3"}` (for `Zn`, `|G| = group_n`) |
+| `fusion(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, skeleton="cyclic", group="Zn", group_n=3)` | II | `skeleton in {"cyclic","nested_flag","matrix_units","group"}`; `nested_flag` needs `bond_dim <= d`; `cyclic` accepts any `bond_dim` (a group convolution only when `bond_dim` divides `d`; for `bond_dim > d` the single-site channels are linearly dependent and Assumption 1 first holds on blocks of `ceil((bond_dim-1)/(d-1))` sites, so use `blocking="auto"`); `matrix_units` needs `bond_dim = 1 + m**2` for integer `m <= d` (`bond_dim` = 2, 5, 10, 17, 26, ...); `group` needs `d = bond_dim = |G|` with `group in {"Zn","Zn_product","S3"}` (for `Zn`, `|G| = group_n`) |
 | `fusion_bond_resolved(skeleton, n_sites=None, n_blocks=None, blocking=1, max_blocking=8)` | II-B | `skeleton`: a pre-built `FusionSkeleton` (e.g. from `mpu_generators.skeletons.lee_yang_skeleton()`) |
 | `grafted(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8)` | I + II | requires even `bond_dim` (`= 2 * n_channels`) with `n_channels <= d`; the channels are the `cyclic` skeleton, a group convolution only when `n_channels` divides `d` |
 
@@ -275,6 +276,8 @@ reused bulk tensor `(A, l_vec, r_vec)` (use `[A] * N`):
 |---|---|
 | `clock(D=3, d=2, seed=None)` | A $D$-cycle permutation dressed by $D$ independent Haar unitaries — the degree-1 special case of (RR) |
 | `group_automaton(group="Zn", n=3, cocycle=None, seed=None)` | Group-multiplication automaton $A[g,h]=\lvert h\rangle\langle g^{-1}h\rvert$, optionally dressed by a 2-cocycle; `group in {"Zn","Sn"}` |
+| `shared_basis_automaton(transitions=None, D=4, d=2, R=None, V=None, final_phases=None, start=0, seed=None)` | Counter automaton $A[v,\sigma_a(v)]\mathrel{+}=V_v\lvert r_a\rangle\langle r_a\rvert$: every vertex reads the site in the same basis $R$; letter $a$ moves the vertex by $\sigma_a$ (default: the lazy ring $v\mapsto v+a$), $V_v$ Haar by default, $r_u=e^{i\varphi_u}$. Unitary for every $R$, $V$, $\varphi$ and every map $\sigma_a$ |
+| `cayley_automaton(group="S3", generators=None, group_n=0, R=None, V=None, final_phases=None, seed=None)` | `shared_basis_automaton` on the Cayley graph of `group` (vertex $\to$ vertex $\cdot g_a$, $d$ = number of generators; default for `S3`: a transposition and a 3-cycle, $d=2$, $D=6$) |
 | `self_direction(D=4, d=2, mu=1.0, W=None, seed=None)` | A tensor satisfying $\sum_b A[a,b]\,r_b = \mu\, r_a\, W$ |
 | `resonant(D=5, d=2, target_phases=None, seed=None)` | Spectrum on the $D$-th roots of unity, embedded via a non-unitary change of basis that is still diagonalizable with unit-modulus eigenvalues |
 | `multi_symbol(d=3, seed=None)` | Special case of `self_direction` with $\mu=1$, $W=\operatorname{diag}(\mu_0,\dots,\mu_{d-1})$ — not an independent mechanism |
@@ -285,6 +288,45 @@ Two variants are not implemented: dressing a unitary on ancilla ⊗ physical
 does not produce (RR) (the resolutions of the identity it gives sum over the
 wrong index), and a triangular (Jordan-type) extension leaves a boundary
 mismatch with the bulk.
+
+#### Shared-basis automata compared with the Haar-basis Mode I sampler
+
+`branching` draws an independent Haar basis at every vertex. In
+`shared_basis_automaton` all vertices read in one basis, so the input-side
+projectors take only $d$ distinct values instead of one per edge. The class
+is exactly unitary either way; what changes is how an operator spreads. The
+table gives the fraction of $U_N P_i U_N^\dagger$ that is *not* supported in a
+window of radius $R$ around the middle site ($N=60$, maximum over the three
+Pauli matrices, three seeds; computed by contracting the operator as a
+bond-dimension-$D^2$ MPO, checked against dense matrices at $N\le 10$):
+
+| tensor ($d=2$) | $R=4$ | $R=12$ | $R=24$ |
+|---|---|---|---|
+| `branching`, ring digraph $D=4$ (Haar bases) | 0.67-0.70 | 0.26-0.30 | 0.05-0.09 |
+| `branching`, ring digraph $D=6$ (Haar bases) | 0.78-0.80 | 0.54-0.56 | 0.28-0.31 |
+| `branching`, random digraph $D=4$ | 0.33-0.75 | 0.05-0.36 | 0.002-0.13 |
+| `shared_basis_automaton`, ring $D=4$ | 0.89-0.91 | 0.84-0.87 | 0.83-0.86 |
+| `shared_basis_automaton`, ring $D=6$ | 0.92-0.94 | 0.88-0.91 | 0.85-0.88 |
+| `cayley_automaton("S3")`, $D=6$ | 0.90-0.97 | 0.84-0.94 | 0.82-0.91 |
+
+With permutation maps the weight towards larger site index does not decay
+(for the seed-0 tensors at $N=40$ it is $0.823$ for every $R=2,6,12$) while
+the weight towards smaller site index decays (0.52, 0.29, 0.12 for the ring
+$D=4$): the chain is a one-directional counter and is not reflection
+symmetric. Mode II `cyclic` (identity $V$) also has an $R$-independent weight
+but is symmetric. These are numerical observations, not theorems. Everything
+else measured is the same as for the Haar-basis ring: the operator-Schmidt
+rank at the middle cut ($N=10$) equals the bond dimension, and
+the circuits of [`TreeMPU`](https://github.com/Mrcocvs02/TreeMPU) with the
+closed-form Mode I boundary have identical $q=\chi$, $\ell$, qubit count,
+depth and gate count (8 sites, $D=4$: $q=4$, $\ell=3$, 29 qubits), because
+that cost depends only on $\chi$ and $d$.
+
+`group_automaton` is the special case with reading basis $1$, all group
+elements as letters and $V_g$ the left multiplication (identical tensors,
+tested for $\mathbb Z_2,\mathbb Z_3,\mathbb Z_4,S_3$); Mode II `cyclic` with
+`bond_dim == d` is the special case $V_v=1$ with phases
+$\varphi_q=\arg\sum_g\ell_g\omega^{gq}$ in the eigenbasis of $y_1$ (tested).
 
 ### `generate_random_mpu(...)`
 
@@ -469,8 +511,6 @@ Not implemented yet (contributions welcome):
 - **New skeletons**: $\mathrm{Fun}(G)$ (diagonal, unit-modulus entries),
   Brandt, $H_8$, and a generator for periodic boundaries with a prescribed
   GNVW index.
-- **Relaxing the `cyclic` constraint** `bond_dim <= d` to "$\Gamma_{N_0}$ injective
-  for some small $N_0$".
 - **Mode II-B**: an algebraic certificate (null-complement and boundary
   compatibility conditions of the thesis) beyond the intertwiner (I).
 - **Analysis layer**: Mode II causal multipliers and the Mode I endpoint
