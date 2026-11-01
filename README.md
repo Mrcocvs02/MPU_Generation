@@ -467,7 +467,7 @@ reproducibility.
 The theory implemented here is derived in the author's master's thesis,
 *Beyond-QCA MPUs: Generation, Certification, and Circuit Synthesis*
 (M. Vassallo, University of Bologna, 2026;
-[AMS Laurea](https://amslaurea.unibo.it/id/eprint/39893), published with
+[AMS Laurea](https://amslaurea.unibo.it/id/eprint/39893), with
 known errors listed in
 [docs/thesis_errata.md](https://github.com/Mrcocvs02/TreeMPU/blob/main/docs/thesis_errata.md)),
 and in the manuscript "Tensor-First Sampling of Exact

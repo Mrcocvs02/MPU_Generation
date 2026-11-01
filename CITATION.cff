@@ -25,7 +25,7 @@ references:
       name: "Alma Mater Studiorum - Università di Bologna"
     year: 2026
     url: "https://amslaurea.unibo.it/id/eprint/39893"
-    notes: "The published version contains known errors, listed in docs/thesis_errata.md of the TreeMPU repository."
+    notes: "The deposited version contains known errors, listed in docs/thesis_errata.md of the TreeMPU repository."
   - type: article
     title: "Matrix-Product Unitaries: Beyond Quantum Cellular Automata"
     authors:
