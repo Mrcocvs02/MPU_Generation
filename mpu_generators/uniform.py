@@ -50,11 +50,13 @@ import numpy as np
 
 from .base import (
     MPUGenerator,
+    _as_unitary,
+    _cayley_transitions,
     _check_row_resolution,
-    _finite_group_table,
     _haar_unitary,
     _mode1_site_tensor,
     _random_out_regular_digraph,
+    _shared_basis_site,
 )
 
 #: Scale of the random (uncertified) entries in
@@ -342,29 +344,18 @@ class UniformMPUGenerator(MPUGenerator):
         if not 0 <= start < D:
             raise ValueError(f"start={start} out of range for D={D}.")
 
-        def _unitary(M, name):
-            M = np.asarray(M, dtype=complex)
-            if M.shape != (d, d) or np.linalg.norm(M.conj().T @ M - np.eye(d)) > _UNITARY_ATOL:
-                raise ValueError(f"{name} must be a unitary of shape ({d}, {d}).")
-            return M
-
-        R = _haar_unitary(d, rng) if R is None else _unitary(R, "R")
+        R = _haar_unitary(d, rng) if R is None else _as_unitary(R, d, "R", _UNITARY_ATOL)
         if V is None:
             V = [_haar_unitary(d, rng) for _ in range(D)]
         else:
             if len(V) != D:
                 raise ValueError(f"V must contain D={D} unitaries; got {len(V)}.")
-            V = [_unitary(Vv, "V[v]") for Vv in V]
+            V = [_as_unitary(Vv, d, "V[v]", _UNITARY_ATOL) for Vv in V]
         phases = np.zeros(D) if final_phases is None else np.asarray(final_phases, dtype=float)
         if phases.shape != (D,):
             raise ValueError(f"final_phases must have shape ({D},); got {phases.shape}.")
 
-        A = np.zeros((d, d, D, D), dtype=complex)
-        for v in range(D):
-            for a in range(d):
-                ra = R[:, a : a + 1]
-                # Stored block is the transpose of the operator (out <- in).
-                A[:, :, v, int(transitions[a][v])] += (V[v] @ ra @ ra.conj().T).T
+        A = _shared_basis_site(transitions, R, V, d, D)
         _check_row_resolution(A)
         l_vec = np.zeros(D, dtype=complex)
         l_vec[start] = 1.0
@@ -423,34 +414,13 @@ class UniformMPUGenerator(MPUGenerator):
         ``generators`` = all elements, :math:`R=1` and :math:`V_g` = left
         multiplication by :math:`g`.
         """
-        elements, mult, _inv, identity, _irreps = _finite_group_table(group, group_n)
-        idx = {g: i for i, g in enumerate(elements)}
-        if generators is None:
-            if group != "S3":
-                raise ValueError("generators are required for groups other than 'S3'.")
-
-            def order(g):
-                k, h = 1, g
-                while h != identity:
-                    h, k = mult(h, g), k + 1
-                return k
-
-            generators = [
-                next(g for g in elements if order(g) == 2),
-                next(g for g in elements if order(g) == 3),
-            ]
-        if len(generators) < 2:
-            raise ValueError("need at least two generators (physical dimension d >= 2).")
-        for g in generators:
-            if g not in idx:
-                raise ValueError(f"{g!r} is not an element of the group {group!r}.")
-        transitions = [[idx[mult(h, g)] for h in elements] for g in generators]
+        transitions, start, _d = _cayley_transitions(group, generators, group_n)
         return self.shared_basis_automaton(
             transitions=transitions,
             R=R,
             V=V,
             final_phases=final_phases,
-            start=idx[identity],
+            start=start,
             seed=seed,
         )
 

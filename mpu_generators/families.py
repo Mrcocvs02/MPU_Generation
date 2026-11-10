@@ -22,11 +22,28 @@ name                                      mode    construction
 ``fusion_group_S3``                       II      group convolution, :math:`S_3` (d = 6)
 ``fusion_group_Zn_product``               II      group convolution, :math:`\mathbb Z_2^3` (d = 8)
 ``fusion_bond_resolved_lee_yang``         II-B    Lee-Yang skeleton (d = 5, chi = 14)
+``shared_basis_ring``                     I       counter automaton on a ring, one reading basis
+``shared_basis_general``                  I       ring automaton, site-dependent bases and unitaries
+``cayley_S3``                             I       counter automaton on the Cayley graph of S_3 (d = 2, chi = 6)
+``cayley_S3_general``                     I       as ``cayley_S3`` with site-dependent bases and unitaries
+``multi_start_parity``                    I       four starts, one vertex each: parity-controlled phase (chi = 4)
+``multi_start_ring``                      I       four copies of a ring automaton, one per guess of the parity
+``multi_start_general``                   I       as ``multi_start_ring``, site dependent
+``multi_start_stacked``                   I x I   ``branching`` times ``multi_start_parity``: first-cut rank above d
 ========================================  ======  =========================================
 
 The tensor-first sampling paper uses ``branching_uniform`` and the Mode II
 fusion families; ``branching_general``, ``grafted`` and the Lee-Yang family
-appear in the thesis only.
+appear in the thesis only. The last four families (shared-basis counter
+automata, :meth:`~mpu_generators.base.MPUGenerator.shared_basis_chain` and
+:meth:`~mpu_generators.base.MPUGenerator.cayley_chain`) are not in the thesis
+or the paper; they are validated by the unit tests and use the same generator
+settings as the Mode I families (``blocking="auto", max_blocking=3``). The
+``multi_start`` families (:meth:`~mpu_generators.base.MPUGenerator.multi_start`)
+are not in the thesis or the paper either; for them ``bond_dim`` counts the
+vertices of one copy, rounded up to an odd number (an even ring already knows
+the parity, see the notes of ``multi_start``), and the bond of the chain is four
+times that.
 """
 
 from __future__ import annotations
@@ -46,6 +63,14 @@ FAMILIES: dict[str, str] = {
     "fusion_group_S3": "Mode II, group convolution S_3 (d = bond_dim = 6)",
     "fusion_group_Zn_product": "Mode II, group convolution Z_2 x Z_2 x Z_2 (d = bond_dim = 8)",
     "fusion_bond_resolved_lee_yang": "Mode II-B, Lee-Yang skeleton (d = 5, bond_dim = 14)",
+    "shared_basis_ring": "Mode I, shared-basis counter automaton on a ring (translation invariant)",
+    "shared_basis_general": "Mode I, ring automaton with site-dependent bases and vertex unitaries",
+    "cayley_S3": "Mode I, shared-basis automaton on the Cayley graph of S_3 (d = 2, bond_dim = 6)",
+    "cayley_S3_general": "Mode I, Cayley graph of S_3, site-dependent bases and unitaries",
+    "multi_start_parity": "Mode I, four starts: phase controlled by the total parity (bond 4)",
+    "multi_start_ring": "Mode I, four copies of a ring automaton, one per guess (bond 4 * bond_dim)",
+    "multi_start_general": "Mode I, as multi_start_ring with site-dependent data",
+    "multi_start_stacked": "branching times multi_start_parity (first-cut rank above d)",
 }
 
 
@@ -67,8 +92,9 @@ def build_family(
     d, bond_dim : int
         Local dimension and bond dimension (default 2 each). Both are ignored
         by the families with fixed values: ``fusion_group_S3`` (6, 6),
-        ``fusion_group_Zn_product`` (8, 8) and ``fusion_bond_resolved_lee_yang``
-        (5, 14). ``grafted`` uses ``2 * max(1, bond_dim // 2)``;
+        ``fusion_group_Zn_product`` (8, 8), ``fusion_bond_resolved_lee_yang``
+        (5, 14) and, for ``bond_dim`` only, ``cayley_S3`` / ``cayley_S3_general``
+        (d = 2, bond_dim = 6). ``grafted`` uses ``2 * max(1, bond_dim // 2)``;
         ``fusion_group_Zn`` needs ``bond_dim == d``.
     seed : int
         Generator seed (default 0).
@@ -170,6 +196,50 @@ def build_family(
             group="Zn_product",
             group_n=[2, 2, 2],
             **size,
+        )
+    if name in ("shared_basis_ring", "shared_basis_general"):
+        gen = (
+            U
+            if name == "shared_basis_ring"
+            else MPUGenerator(seed=seed, coherent_in_n=coherent_in_n)
+        )
+        return gen.shared_basis_chain(
+            d=d, D=bond_dim, transitions="ring", blocking="auto", max_blocking=3, **size
+        )
+    if name in ("cayley_S3", "cayley_S3_general"):
+        gen = U if name == "cayley_S3" else MPUGenerator(seed=seed, coherent_in_n=coherent_in_n)
+        return gen.cayley_chain(group="S3", blocking="auto", max_blocking=3, **size)
+    if name == "multi_start_parity":
+        # Phases fixed so that the two guesses stay well separated: TreeMPU's conditioning
+        # q is then that of a counter of the same bond, against up to 187 for random phases.
+        theta = np.zeros((2, 1, d))
+        theta[1, 0, 1:] = 1.5
+        return U.multi_start(
+            d=d,
+            D=1,
+            sector_phases=[0.0, 0.0],
+            edge_phases=theta,
+            blocking="auto",
+            max_blocking=3,
+            **size,
+        )
+    if name in ("multi_start_ring", "multi_start_general"):
+        gen = (
+            U
+            if name == "multi_start_ring"
+            else MPUGenerator(seed=seed, coherent_in_n=coherent_in_n)
+        )
+        ring = bond_dim + 1 - bond_dim % 2
+        return gen.multi_start(
+            d=d, D=ring, transitions="ring", blocking="auto", max_blocking=2 * ring, **size
+        )
+    if name == "multi_start_stacked":
+        from .mixing import stack
+
+        block = {"blocking": 2}
+        return stack(
+            U.branching(d=d, bond_dim=bond_dim, **block, **size),
+            U.multi_start(d=d, D=1, **block, **size),
         )
     # fusion_bond_resolved_lee_yang
     from .skeletons import lee_yang_skeleton

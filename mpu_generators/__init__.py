@@ -5,13 +5,17 @@ Main entry points
 -----------------
 :class:`MPUGenerator`, :class:`UniformMPUGenerator`
     Mode I (row resolution), Mode II (fusion closure), Mode II-B
-    (bond-resolved fusion) and grafted constructions.
+    (bond-resolved fusion) and grafted constructions, and the shared-basis
+    counter automata (``shared_basis_chain``, ``cayley_chain``) and Mode I with
+    several starts (``multi_start``).
 :func:`generate_random_mpu`
     Functional interface to the generators.
 :func:`build_family`, :data:`FAMILIES`
-    Named families used in the thesis and the tensor-first sampling paper.
+    Named families used in the thesis and the tensor-first sampling paper,
+    plus the shared-basis and multi-start families.
 :mod:`mpu_generators.skeletons`, :mod:`mpu_generators.mixing`
-    Mode II-B skeletons and ways to combine certified chains.
+    The skeleton of every mode (``MPUGenerator.sample`` is the common
+    pipeline) and ways to combine certified chains.
 """
 
 from . import mixing, skeletons

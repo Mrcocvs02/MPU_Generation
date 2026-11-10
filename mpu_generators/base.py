@@ -24,6 +24,14 @@ Constructions
   :class:`~mpu_generators.skeletons.FusionSkeleton`, resampled dressing.
 * **Grafted**: :meth:`MPUGenerator.grafted`; a Mode I path inside the cyclic
   Mode II channels.
+* **Shared-basis counter automata** (new, not in the thesis):
+  :meth:`MPUGenerator.shared_basis_chain`, :meth:`MPUGenerator.cayley_chain`;
+  Mode I tensors in which all vertices of a site read the input in one basis.
+  Unitary for every :math:`N`, reading basis, vertex unitary, phase, bond
+  dimension and map (single-path orthonormality, in the docstring).
+* **Multi-start Mode I** (new, not in the thesis): :meth:`MPUGenerator.multi_start`;
+  copies of one shared-basis automaton, one per guess of a global charge, which
+  the start weights verify. Every block is a Mode I chain.
 
 Certificates and checks
 -----------------------
@@ -48,6 +56,10 @@ Mode I (``branching``)         (RR) on every row, also of the readout cascade
                                 for ``nested_flag``
 Grafted                         (RR) for the Mode I factor; (FC), (B) (flat spectrum) and
                                 independence for the channels
+Shared-basis automata           (RR) on every site tensor; the proof of unitarity is the
+                                single-path argument of ``shared_basis_chain``
+Multi-start Mode I              (RR) on every block; the proof of unitarity is the
+                                charge-selection argument of ``multi_start``
 Mode II-B                       none (the intertwiner helpers of
                                 :mod:`mpu_generators.skeletons` are not called)
 ==============================  ==========================================================
@@ -87,7 +99,6 @@ Examples
 
 from __future__ import annotations
 
-import math
 import warnings
 from itertools import permutations, product
 
@@ -228,7 +239,8 @@ def _check_row_resolution(A: np.ndarray, atol: float = _CHECK_ATOL) -> None:
     Parameters
     ----------
     A : ndarray
-        Tensor of shape ``(d, d, D, D)``.
+        Tensor of shape ``(d, d, D_left, D_right)`` (the bond dimensions may
+        differ).
     atol : float
         Absolute Frobenius-norm tolerance of each residual.
 
@@ -238,10 +250,10 @@ def _check_row_resolution(A: np.ndarray, atol: float = _CHECK_ATOL) -> None:
         If completeness or pairwise orthogonality fails by more than ``atol``
         (Frobenius norm) at some vertex.
     """
-    d, _, D, _ = A.shape
+    d, _, D_left, D_right = A.shape
     eye = np.eye(d, dtype=complex)
-    for v in range(D):
-        used = [u for u in range(D) if np.any(A[:, :, v, u])]
+    for v in range(D_left):
+        used = [u for u in range(D_right) if np.any(A[:, :, v, u])]
         if not used:
             continue
         acc = sum(A[:, :, v, u] @ A[:, :, v, u].conj().T for u in used)
@@ -1607,6 +1619,95 @@ def _run_blocking(one_blocking, d, bond_dim, n_sites, n_blocks, blocking, max_bl
     return one_blocking(sites_L, L)
 
 
+# --- shared-basis automata: helpers ---
+
+
+def _depth(x) -> int:
+    """Return the nesting depth of a list/tuple/array following first entries."""
+    n = 0
+    while isinstance(x, (list, tuple, np.ndarray)) and len(x):
+        x = x[0]
+        n += 1
+    return n
+
+
+def _as_unitary(M, d: int, name: str, atol: float = 1e-9) -> np.ndarray:
+    """Return ``M`` as a complex ``(d, d)`` unitary, or raise ``ValueError``."""
+    M = np.asarray(M, dtype=complex)
+    if M.shape != (d, d) or np.linalg.norm(M.conj().T @ M - np.eye(d)) > atol:
+        raise ValueError(f"{name} must be a unitary of shape ({d}, {d}).")
+    return M
+
+
+def _shared_basis_site(
+    transitions: list, R: np.ndarray, V: list[np.ndarray], d: int, D_right: int
+) -> np.ndarray:
+    r"""Return the site tensor :math:`A[v,\sigma_a(v)] \mathrel{+}= V_v|r_a\rangle\langle r_a|`.
+
+    ``transitions[a][v]`` is :math:`\sigma_a(v)\in\{0..D_{\rm right}-1\}`,
+    ``len(V)`` is the left bond dimension. The stored block is the transpose
+    of the operator (convention ``A[p_in, p_out, bond_L, bond_R]``).
+    """
+    A = np.zeros((d, d, len(V), D_right), dtype=complex)
+    for v, Vv in enumerate(V):
+        for a in range(d):
+            ra = R[:, a : a + 1]
+            A[:, :, v, int(transitions[a][v])] += (Vv @ ra @ ra.conj().T).T
+    return A
+
+
+def _cayley_transitions(group: str, generators: list | None, group_n: int | list[int]):
+    """Return ``(transitions, start, d)`` of the Cayley graph of a small group.
+
+    Letter ``a`` multiplies the vertex on the right by ``generators[a]``; the
+    start vertex is the identity. Default generators (``S3`` only): the first
+    element of order 2 and the first of order 3.
+
+    Raises
+    ------
+    ValueError
+        If ``generators`` is missing (for a group other than ``S3``), has
+        fewer than two elements, or contains a non-element.
+    """
+    elements, mult, _inv, identity, _irreps = _finite_group_table(group, group_n)
+    idx = {g: i for i, g in enumerate(elements)}
+    if generators is None:
+        if group != "S3":
+            raise ValueError("generators are required for groups other than 'S3'.")
+
+        def order(g):
+            k, h = 1, g
+            while h != identity:
+                h, k = mult(h, g), k + 1
+            return k
+
+        generators = [
+            next(g for g in elements if order(g) == 2),
+            next(g for g in elements if order(g) == 3),
+        ]
+    if len(generators) < 2:
+        raise ValueError("need at least two generators (physical dimension d >= 2).")
+    for g in generators:
+        if g not in idx:
+            raise ValueError(f"{g!r} is not an element of the group {group!r}.")
+    transitions = [[idx[mult(h, g)] for h in elements] for g in generators]
+    return transitions, idx[identity], len(generators)
+
+
+def _random_transitions(mode: str, d: int, D_in: int, D_out: int, rng: np.random.Generator):
+    """Return ``d`` maps ``{0..D_in-1} -> {0..D_out-1}`` of the given ``mode``."""
+    if mode == "random":
+        return [[int(u) for u in rng.integers(0, D_out, size=D_in)] for _ in range(d)]
+    if D_in != D_out:
+        raise ValueError(
+            f"transitions={mode!r} needs equal bond dimensions; got {D_in} and {D_out} "
+            "(use 'random' or explicit maps)."
+        )
+    if mode == "ring":
+        return [[(v + a) % D_in for v in range(D_in)] for a in range(d)]
+    return [[int(u) for u in rng.permutation(D_in)] for _ in range(d)]
+
+
 # --- MPUGenerator ---
 
 
@@ -1805,6 +1906,80 @@ class MPUGenerator:
 
         return _run_blocking(_one_blocking, d, bond_dim, n_sites, n_blocks, blocking, max_blocking)
 
+    # --- The common pipeline: every mode is a skeleton ---
+
+    def sample(
+        self,
+        skeleton,
+        n_sites: int | None = None,
+        n_blocks: int | None = None,
+        blocking: int | str = 1,
+        max_blocking: int = 8,
+    ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
+        r"""Sample a chain from a :class:`~mpu_generators.skeletons.Skeleton`.
+
+        This is the single pipeline behind every generation method:
+        ``branching``, ``fusion``, ``fusion_bond_resolved``, ``grafted``,
+        ``shared_basis_chain``, ``cayley_chain`` and ``multi_start`` build the
+        skeleton of their mode and call it. The skeleton supplies the chain-level data,
+        one tensor per site and the boundaries; the generator checks the
+        sizes, draws one site per position (one in the uniform case), applies
+        the (auto-)blocking and runs the numerical safeguards. A new
+        construction is a new subclass of
+        :class:`~mpu_generators.skeletons.Skeleton`; it needs no change here.
+
+        Parameters
+        ----------
+        skeleton : mpu_generators.skeletons.Skeleton
+            The construction.
+        n_sites, n_blocks, blocking, max_blocking
+            As in :meth:`branching`.
+
+        Returns
+        -------
+        tensors : list of ndarray
+            Site tensors ``A[p_in, p_out, bond_L, bond_R]``.
+        l_vec, r_vec : ndarray
+            Boundary vectors.
+
+        Raises
+        ------
+        ValueError
+            For invalid sizes (see :meth:`_generate`) or invalid skeleton data.
+        RuntimeError
+            If ``verify`` is true and a numerical check fails.
+
+        Examples
+        --------
+        >>> from mpu_generators.skeletons import CyclicSkeleton
+        >>> tensors, l_vec, r_vec = MPUGenerator(seed=0).sample(CyclicSkeleton(3, 3), n_sites=3)
+        >>> len(tensors), tensors[0].shape
+        (3, (3, 3, 3, 3))
+        """
+        uniform = not self._resample
+        verify = self.verify
+
+        def build_sites(n_sites_total: int, rng: np.random.Generator):
+            # Callback of _generate: chain-level draws, then one site per
+            # position in construction order, then the closing draws.
+            state = skeleton.prepare(rng, n_sites_total, uniform, verify)
+            order = iter(range(n_sites_total))
+
+            def make_site(r: np.random.Generator) -> np.ndarray:
+                j = next(order)
+                k = n_sites_total - 1 - j if skeleton.reverse_sites else j
+                return skeleton.site(state, r, k, verify)
+
+            sites = self._sites(make_site, n_sites_total, rng)
+            sites, l_vec, r_vec = skeleton.close(state, sites, rng, verify)
+            if not skeleton.reverse_sites:
+                sites = list(reversed(sites))  # _finalize_chain reverses them again
+            return sites, l_vec, r_vec
+
+        return self._generate(
+            skeleton.d, skeleton.bond_dim, n_sites, n_blocks, blocking, max_blocking, build_sites
+        )
+
     # --- Mode I: branching ---
 
     def branching(
@@ -1908,52 +2083,10 @@ class MPUGenerator:
         on the same certified class, so statistics are not comparable with the
         default one.
         """
-        if digraph is not None:
-            digraph = _check_digraph(digraph, bond_dim, d)
-        if isinstance(ranks, dict):
-            if digraph is None:
-                raise ValueError("explicit ranks need an explicit digraph.")
-            _check_ranks(ranks, digraph, d)
+        from .skeletons import RowResolutionSkeleton
 
-        def build_sites(n_sites_total: int, rng: np.random.Generator):
-            # Callback of _generate: builds the bulk sites (and the readout
-            # cascade) in construction order together with the boundary vectors.
-            if digraph is None:
-                edges = _random_out_regular_digraph(bond_dim, d, rng, out_degree)
-
-            def make_site(r: np.random.Generator) -> np.ndarray:
-                # One bulk tensor; a fresh random digraph per site only in the
-                # resampled case, so uniform generators reuse ``edges``.
-                if digraph is not None:
-                    site_edges = digraph
-                elif self._resample:
-                    site_edges = _random_out_regular_digraph(bond_dim, d, r, out_degree)
-                else:
-                    site_edges = edges
-                return _mode1_site_tensor(bond_dim, site_edges, d, r, ranks=ranks)
-
-            sites = self._sites(make_site, n_sites_total, rng)
-
-            if self.verify:
-                for A in sites[: (1 if not self._resample else n_sites_total)]:
-                    _check_row_resolution(A)
-
-            if readout is None:
-                l_vec = np.zeros(bond_dim, dtype=complex)
-                l_vec[0] = 1.0
-            else:
-                cascade_sites = _combined_readout_sites(readout, d, bond_dim, rng)
-                if self.verify:
-                    _check_combined_readout_cascade(cascade_sites)
-                # Reversed because _finalize_chain reverses the list, which puts
-                # the cascade (level 0 first, bond_L = 1) at the left end.
-                sites = sites + list(reversed(cascade_sites))
-                l_vec = np.array([1.0], dtype=complex)
-
-            r_vec = np.ones(bond_dim, dtype=complex)
-            return sites, l_vec, r_vec
-
-        return self._generate(d, bond_dim, n_sites, n_blocks, blocking, max_blocking, build_sites)
+        skeleton = RowResolutionSkeleton(d, bond_dim, digraph, out_degree, ranks, readout)
+        return self.sample(skeleton, n_sites, n_blocks, blocking, max_blocking)
 
     # --- Mode II: fusion closure ---
 
@@ -2070,6 +2203,13 @@ class MPUGenerator:
         skeleton. The numerical re-check with ``verify=True`` is listed per
         skeleton in the module docstring.
         """
+        from .skeletons import (
+            CyclicSkeleton,
+            GroupSkeleton,
+            MatrixUnitSkeleton,
+            NestedFlagSkeleton,
+        )
+
         if skeleton == "cyclic":
             # Any bond_dim; for bond_dim > d the channels are dependent by design
             # (see Notes) and a short chain cannot reach the requested bond dimension.
@@ -2088,128 +2228,19 @@ class MPUGenerator:
                         UserWarning,
                         stacklevel=2,
                     )
+            sk = CyclicSkeleton(d, bond_dim)
         elif skeleton == "nested_flag":
-            if bond_dim > d:
-                raise ValueError(
-                    f"skeleton='nested_flag' needs d >= bond_dim (got d={d}, bond_dim={bond_dim})."
-                )
+            sk = NestedFlagSkeleton(d, bond_dim)
         elif skeleton == "matrix_units":
-            m = math.isqrt(bond_dim - 1) if bond_dim >= 1 else -1
-            if m < 1 or 1 + m * m != bond_dim:
-                raise ValueError(
-                    f"skeleton='matrix_units' needs bond_dim = 1 + m^2 for "
-                    f"an integer m >= 1 (got bond_dim={bond_dim}); valid "
-                    f"values are 2, 5, 10, 17, 26, ..."
-                )
-            if m > d:
-                raise ValueError(
-                    f"skeleton='matrix_units' needs m <= d (got m={m} from "
-                    f"bond_dim={bond_dim}, d={d})."
-                )
+            sk = MatrixUnitSkeleton(d, bond_dim)
         elif skeleton == "group":
-            if group not in ("Zn", "Zn_product", "S3"):
-                raise ValueError(
-                    f"Unknown group {group!r} for skeleton='group'; "
-                    f"expected 'Zn', 'Zn_product' or 'S3'."
-                )
-            if group == "Zn":
-                group_size = group_n
-            elif group == "Zn_product":
-                group_size = int(np.prod(list(group_n)))
-            else:
-                group_size = 6  # |S3|
-            if d != group_size or bond_dim != group_size:
-                raise ValueError(
-                    f"skeleton='group' needs d = bond_dim = |G| (group="
-                    f"{group!r} has |G|={group_size}; got d={d}, "
-                    f"bond_dim={bond_dim})."
-                )
+            sk = GroupSkeleton(d, bond_dim, group, group_n)
         else:
             raise ValueError(
                 f"Unknown skeleton {skeleton!r}; expected 'cyclic', "
                 f"'nested_flag', 'matrix_units' or 'group'."
             )
-
-        def build_sites(n_sites_total: int, rng: np.random.Generator):
-            # Callback of _generate: the boundary vector is drawn once per chain,
-            # the dressed channel tensors by ``make_site`` (one per site, or one
-            # repeated in the uniform case).
-            if skeleton == "cyclic":
-
-                def make_site(r: np.random.Generator) -> np.ndarray:
-                    y = _cyclic_character_channels(d, bond_dim, r)
-                    if self.verify:
-                        _check_fusion_closure(y)
-                        if bond_dim <= d:
-                            _check_channel_span_full_rank(y, bond_dim)
-                    A = np.zeros((d, d, bond_dim, bond_dim), dtype=complex)
-                    for g in range(bond_dim):
-                        A[:, :, g, g] = y[g].T
-                    return A
-
-                l_vec = _flat_spectrum_boundary(bond_dim, rng)
-                if self.verify:
-                    _check_flat_spectrum(l_vec)
-
-            elif skeleton == "nested_flag":
-
-                def make_site(r: np.random.Generator) -> np.ndarray:
-                    y = _nested_flag_channels(d, bond_dim, r)
-                    if self.verify:
-                        _check_nested_flag_closure(y)
-                        _check_channel_span_full_rank(y, bond_dim)
-                    A = np.zeros((d, d, bond_dim, bond_dim), dtype=complex)
-                    for a in range(bond_dim):
-                        A[:, :, a, a] = y[a].T
-                    return A
-
-                l_vec = _nested_flag_boundary(bond_dim, rng)
-
-            elif skeleton == "matrix_units":
-
-                def make_site(r: np.random.Generator) -> np.ndarray:
-                    y, labels = _matrix_unit_channels(d, m, r)
-                    if self.verify:
-                        _check_matrix_unit_closure(y, labels)
-                        if m < d:
-                            # For m == d the identity equals sum_i y_(i,i): the
-                            # channels are linearly dependent by design.
-                            _check_channel_span_full_rank(y, bond_dim)
-                    A = np.zeros((d, d, bond_dim, bond_dim), dtype=complex)
-                    for a in range(bond_dim):
-                        A[:, :, a, a] = y[a].T
-                    return A
-
-                l_vec = _matrix_unit_boundary(m, rng)
-
-            else:  # group
-                elements, gmult, ginv, gid, irreps = _finite_group_table(group, group_n)
-                if self.verify:
-                    _check_group_representation(elements, gmult, irreps)
-                gidx = {g: i for i, g in enumerate(elements)}
-                y_group = _group_regular_channels(elements, gmult)
-                gamma_group = _group_fusion_gamma(elements, gmult, ginv)
-
-                def make_site(r: np.random.Generator) -> np.ndarray:
-                    W = _haar_unitary(d, r)
-                    y = np.einsum("ij,ajk,lk->ail", W, y_group, W.conj())
-                    if self.verify:
-                        _check_fusion_closure_general(y, gamma_group)
-                        _check_channel_span_full_rank(y, bond_dim)
-                    A = np.zeros((d, d, bond_dim, bond_dim), dtype=complex)
-                    for a in range(bond_dim):
-                        A[:, :, a, a] = y[a].T
-                    return A
-
-                l_vec = _group_fourier_boundary(elements, irreps, rng)
-                if self.verify:
-                    _check_group_boundary(l_vec, elements, gmult, gidx, gid)
-
-            sites = self._sites(make_site, n_sites_total, rng)
-            r_vec = np.ones(bond_dim, dtype=complex)
-            return sites, l_vec, r_vec
-
-        return self._generate(d, bond_dim, n_sites, n_blocks, blocking, max_blocking, build_sites)
+        return self.sample(sk, n_sites, n_blocks, blocking, max_blocking)
 
     # --- Mode II-B: bond-resolved fusion (skeletons in skeletons.py) ---
 
@@ -2276,33 +2307,7 @@ class MPUGenerator:
         chains for increasing :math:`N` extend a common sequence at the
         *right* end.
         """
-        if (n_sites is None) == (n_blocks is None):
-            raise ValueError("Give exactly one of n_sites or n_blocks.")
-
-        def _one_blocking(sites_L: int, L: int):
-            """Validate ``(sites_L, L)``, then dress, block and verify one chain."""
-            if sites_L < 2:
-                raise ValueError(f"n_sites must be >= 2, got {sites_L}.")
-            if sites_L % L:
-                raise ValueError(f"n_sites={sites_L} is not divisible by blocking={L}.")
-            if sites_L // L < 2:
-                raise ValueError(
-                    f"n_sites={sites_L} with blocking={L} leaves "
-                    f"{sites_L // L} tensor(s); need at least 2."
-                )
-            rng = self._rng(sites_L)
-            sites = self._sites(lambda r: skeleton.dress(r), sites_L, rng)
-            tensors = block_mpu_tensors(sites, L)
-            l_vec, r_vec = skeleton.l_vec.copy(), skeleton.r_vec.copy()
-            if self.verify:
-                _verify_chain(tensors, l_vec, r_vec)
-            return tensors, l_vec, r_vec
-
-        return _run_blocking(
-            _one_blocking, skeleton.d, skeleton.bond_dim, n_sites, n_blocks, blocking, max_blocking
-        )
-
-    # --- Grafted composition (Mode I inside Mode II) ---
+        return self.sample(skeleton, n_sites, n_blocks, blocking, max_blocking)
 
     def grafted(
         self,
@@ -2362,50 +2367,400 @@ class MPUGenerator:
         coincides with it when ``n_channels`` divides ``d``. Grafting is not
         part of the tensor-first sampling paper.
         """
-        if bond_dim % 2:
-            raise ValueError(f"mode='grafted' has bond_dim = 2 * n_channels; got odd {bond_dim}.")
-        n_channels = bond_dim // 2
-        if n_channels > d:
-            raise ValueError(
-                f"mode='grafted' needs d >= bond_dim // 2 (got d={d}, "
-                f"bond_dim={bond_dim} => n_channels={n_channels})."
-            )
-        k_edges = {0: [0], 1: [1, 0]}
+        from .skeletons import GraftedSkeleton
 
-        def build_sites(n_sites_total: int, rng: np.random.Generator):
-            # Callback of _generate: one flat-spectrum boundary per chain, one
-            # grafted tensor per site (or one repeated, in the uniform case).
-            def make_site(r: np.random.Generator) -> np.ndarray:
-                K = _mode1_site_tensor(2, k_edges, d, r, identity_rows=(0,))
-                y = _cyclic_character_channels(d, n_channels, r)
-                if self.verify:
-                    _check_row_resolution(K)
-                    _check_fusion_closure(y)
-                    _check_channel_span_full_rank(y, n_channels)
-                A = np.zeros((d, d, bond_dim, bond_dim), dtype=complex)
-                for a in range(2):
-                    for ap in range(2):
-                        if not np.any(K[:, :, a, ap]):
-                            continue
-                        for g in range(n_channels):
-                            # K stores the transposed block and y[g] is an
-                            # operator, so y[g].T @ K is the stored transpose
-                            # of the operator K[a,ap] @ y[g].
-                            A[:, :, a * n_channels + g, ap * n_channels + g] = (
-                                y[g].T @ K[:, :, a, ap]
-                            )
-                return A
+        return self.sample(GraftedSkeleton(d, bond_dim), n_sites, n_blocks, blocking, max_blocking)
 
-            l_conv = _flat_spectrum_boundary(n_channels, rng)
-            if self.verify:
-                _check_flat_spectrum(l_conv)
-            sites = self._sites(make_site, n_sites_total, rng)
-            l_vec = np.zeros(bond_dim, dtype=complex)
-            l_vec[n_channels:] = l_conv
-            r_vec = np.ones(bond_dim, dtype=complex)
-            return sites, l_vec, r_vec
+    # --- Mode I special case: shared-basis automata ---
 
-        return self._generate(d, bond_dim, n_sites, n_blocks, blocking, max_blocking, build_sites)
+    def shared_basis_chain(
+        self,
+        n_sites: int | None = None,
+        n_blocks: int | None = None,
+        d: int = 2,
+        D: int | list[int] = 4,
+        transitions: str | list | None = None,
+        R: np.ndarray | list | None = None,
+        V: list | None = None,
+        final_phases: np.ndarray | str | None = None,
+        start: int = 0,
+        blocking: int | str = 1,
+        max_blocking: int = 8,
+    ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
+        r"""Sample a chain of shared-basis counter automata.
+
+        Not part of the thesis or paper; a special case of Mode I row
+        resolution (with a diagonal phase on the right boundary) in which, at
+        every site, all vertices of that site read the input in **one**
+        orthonormal basis (the basis is shared by the vertices, not by the
+        sites: it may change from site to site). At site :math:`k`, with vertices :math:`\{0..D_{k}-1\}` on the left
+        bond and :math:`\{0..D_{k+1}-1\}` on the right bond,
+
+        .. math::
+            A_k[v,\sigma_{k,a}(v)] \mathrel{+}= V_{k,v}\,|r_{k,a}\rangle\langle r_{k,a}| ,
+
+        where :math:`R_k=(r_{k,0},\dots,r_{k,d-1})` is a unitary (the reading
+        basis of the site), :math:`V_{k,v}` a unitary attached to the vertex
+        and :math:`\sigma_{k,a}` the move caused by letter :math:`a`. The
+        boundaries are :math:`\ell=e_{\rm start}` and
+        :math:`r_u=e^{i\varphi_u}`. On the product basis state
+        :math:`|r_{1,x_1}\cdots r_{N,x_N}\rangle` the chain acts as
+
+        .. math::
+            U_N\,|r_{1,x_1}\cdots r_{N,x_N}\rangle
+            = e^{i\varphi_{v_N}}\,\bigotimes_k V_{k,v_{k-1}}\,r_{k,x_k},
+            \qquad v_k=\sigma_{k,x_k}(v_{k-1}),
+
+        a single path per input basis vector. Two inputs that first differ at
+        site :math:`j` share :math:`v_{j-1}` and are mapped to orthogonal
+        vectors on site :math:`j`, so the images are orthonormal and
+        :math:`U_N` is unitary for **every** :math:`N`, every choice of
+        :math:`R_k`, :math:`V_{k,v}`, :math:`\varphi`, every bond dimension
+        :math:`D_k` and every map :math:`\sigma_{k,a}` (not only
+        permutations). Nothing couples the bases of different sites: the bond
+        carries the vertex label only, and the reading basis of a site is
+        only required to be common to the vertices *of that site*.
+
+        With this class every site draws its own data. With
+        :class:`~mpu_generators.uniform.UniformMPUGenerator` one site is drawn
+        and reused (translation invariance; ``D`` must then be an integer).
+
+        Parameters
+        ----------
+        n_sites, n_blocks, blocking, max_blocking
+            As in :meth:`branching` (``blocking="auto"`` picks the smallest
+            block size satisfying Assumption 1; ``D`` must then be an integer
+            or its length must match every size tried).
+        d : int
+            Physical dimension (default 2).
+        D : int or list of int
+            Bond dimension, or ``n + 1`` bond dimensions :math:`D_0..D_n` for
+            a chain of ``n`` physical sites (site-dependent generator only);
+            default 4.
+        transitions : {"permutation", "ring", "random"} or list, optional
+            Maps :math:`\sigma_{k,a}`. ``"permutation"``: an independent
+            random permutation per site and letter (needs
+            :math:`D_k=D_{k+1}`); ``"ring"``: :math:`\sigma_a(v)=v+a \bmod D`
+            (same condition); ``"random"``: uniformly random maps, any
+            dimensions. Default: ``"permutation"`` for a constant ``D``,
+            otherwise ``"random"``. Explicit: ``transitions[a][v]`` (the same
+            at every site) or, for the site-dependent generator,
+            ``transitions[k][a][v]``.
+        R : ndarray or list of ndarray, optional
+            Reading basis: one ``(d, d)`` unitary used at every site, or one
+            per physical site (site-dependent only). Haar if omitted.
+        V : list, optional
+            ``V[v]`` unitaries ``(d, d)``, one per left vertex, used at every
+            site, or ``V[k][v]`` (site-dependent only). Haar if omitted.
+        final_phases : ndarray or "random", optional
+            Phases :math:`\varphi_u` of the right boundary, length
+            :math:`D_n` (default zero); ``"random"`` draws them uniformly.
+        start : int
+            Initial vertex (:math:`\ell=e_{\rm start}`), in ``0..D_0-1``.
+
+        Returns
+        -------
+        tensors : list of ndarray
+            Site tensors ``A[p_in, p_out, bond_L, bond_R]``, one per block.
+        l_vec, r_vec : ndarray
+            Boundary vectors; ``l_vec = e_start``, ``r_vec = exp(1j *
+            final_phases)``.
+
+        Raises
+        ------
+        ValueError
+            For invalid sizes (see :meth:`_generate`), wrong shapes or ranges
+            of ``D``, ``transitions``, ``R``, ``V``, ``final_phases`` or
+            ``start``, non-unitary ``R`` / ``V``, per-site data given to a
+            translation-invariant generator, or ``"permutation"`` / ``"ring"``
+            requested with unequal bond dimensions.
+        RuntimeError
+            If ``verify`` is true and a numerical check fails.
+
+        Notes
+        -----
+        Sites are drawn in the order common to all modes (the last site
+        first, reversed at the end). Per site: the maps (random modes only),
+        then :math:`R_k`, then :math:`V_{k,0},\dots,V_{k,D_k-1}`; the phases
+        come last. For a constant ``D`` the chain of ``n + 1`` sites therefore
+        extends the chain of ``n`` sites at the left end.
+
+        *Why the tail does not decay.* In the formula above the vertex
+        :math:`v_{k-1}` is a deterministic function of the letters
+        :math:`x_1..x_{k-1}` on the left, and the output at site :math:`k`
+        depends on it through :math:`V_{k,v_{k-1}}`. The cause of the
+        persistent tail is this classical dependence, not any relation between
+        the bases of different sites: the numbers below are the same for a
+        ring with a single basis and for a ring with an independent basis at
+        every site. With permutation maps the dependence loses no information
+        (different letter strings never reach the same vertex), so a change of
+        one letter changes every later output. In a Haar-basis ``branching``
+        chain the vertices read in different bases, the path is a
+        superposition and not a function of fixed letters, and the numerics
+        show a decaying tail; that mechanism is the standard intuition and is
+        not proved here.
+
+        *Operator spreading.* Changing the input letter at site :math:`j`
+        changes the vertex of every later site, unless the two letters lead
+        to the same vertex. With permutation maps (the ring, for instance) two
+        different paths never merge, and with distinct :math:`V_{k,v}` the
+        evolved operator :math:`U_N P_jU_N^\dagger` keeps a weight outside any
+        window that does not decrease with the radius, towards larger site
+        index (tested numerically up to 8 sites: the weight is the same at radius
+        1, 2 and 3, to within 0.005, for every seed tried; its size, 0.55-0.99,
+        depends on the draw). It is exactly zero when :math:`\sigma_{j,a}`
+        sends the incoming vertex to the same vertex for all letters that
+        the operator mixes. With non-injective maps paths coalesce and the
+        weight decreases with the radius (mean 0.41, 0.32, 0.25 at radius 1,
+        2, 3 for uniformly random maps; no analytic rate is claimed). The tail
+        is a property of the operator and does not enter the cost of
+        :mod:`TreeMPU`, which depends only on :math:`\chi`, :math:`d` and the
+        conditioning number. The chain is one-directional, hence not
+        reflection symmetric.
+
+        *Assumption 1.* A single site reaches only :math:`d` of the
+        :math:`D` vertices from the start vertex, so the boundary operators
+        have full rank only after blocking (typically :math:`d^L\ge D`, with
+        ``blocking="auto"``). With random permutations or random maps the
+        reachable set can be smaller than :math:`D` for any block size, and
+        the search then fails; the ring, and a Cayley graph whose generators
+        generate the group, reach every vertex.
+
+        Examples
+        --------
+        >>> gen = MPUGenerator(seed=0)
+        >>> tensors, l_vec, r_vec = gen.shared_basis_chain(n_sites=4, d=2, D=3)
+        >>> len(tensors), tensors[0].shape
+        (4, (2, 2, 3, 3))
+        """
+        from .skeletons import SharedBasisSkeleton
+
+        skeleton = SharedBasisSkeleton(d, D, transitions, R, V, final_phases, start)
+        return self.sample(skeleton, n_sites, n_blocks, blocking, max_blocking)
+
+    def multi_start(
+        self,
+        n_sites: int | None = None,
+        n_blocks: int | None = None,
+        d: int = 2,
+        n_sectors: int = 2,
+        D: int | list[int] = 4,
+        transitions: str | list | None = None,
+        R: np.ndarray | list | None = None,
+        V: list | None = None,
+        final_phases: np.ndarray | str | None = None,
+        start: int = 0,
+        charges: np.ndarray | list | None = None,
+        sector_phases: np.ndarray | str = "random",
+        edge_phases: np.ndarray | str | None = "random",
+        blocking: int | str = 1,
+        max_blocking: int = 8,
+    ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
+        r"""Sample a Mode I chain with several start vertices.
+
+        Not part of the thesis or paper. Mode I leaves one vertex and decides
+        left to right. Here the chain starts from several copies of one
+        shared-basis automaton (:meth:`shared_basis_chain`): each copy *guesses*
+        a global property of the input, its total charge, and the boundary
+        keeps the copies whose guess was right. Letter :math:`a` has charge
+        :math:`q_a\in\mathbb Z_m`, and :math:`q(x)=\sum_k q_{x_k}`. The copy
+        :math:`(\chi,g)`, with guess :math:`\chi` and Fourier index :math:`g`, is
+
+        .. math::
+            A_k^{(\chi,g)}[v,\sigma_{k,a}(v)] \mathrel{+}=
+            e^{i\theta_{k,\chi}(v,a)}\,\omega^{g q_a}\,
+            V_{k,v}\,|r_{k,a}\rangle\langle r_{k,a}|,\qquad
+            c_{\chi,g}=\frac{e^{i\phi_\chi}\,\omega^{-\chi g}}{m},
+
+        with :math:`\omega=e^{2\pi i/m}` and start weights :math:`c_{\chi,g}`
+        on the vertex ``start`` of each copy. The bond is block diagonal and
+        every block, on its own, is a shared-basis chain, hence Mode I.
+
+        On a product basis input all copies follow the same path, so
+
+        .. math::
+            U_N\,|r_{x}\rangle = \sum_{\chi}\Big(\frac1m\sum_g
+            \omega^{g(q(x)-\chi)}\Big)\,e^{i\phi_\chi+i\Theta_\chi(x)}\,W_N|r_{x}\rangle
+            = e^{i\phi_{q(x)}+i\Theta_{q(x)}(x)}\,W_N|r_{x}\rangle,
+
+        where :math:`\Theta_\chi(x)` adds the phases along the path and
+        :math:`W_N` is the chain without phases. The inner sum is
+        :math:`\delta_{\chi,q(x)}`. So :math:`U_N` is :math:`W_N` times a
+        diagonal unitary, for **every** :math:`N` and every choice of
+        :math:`R_k`, :math:`V_{k,v}`, :math:`\theta`, :math:`\phi`, maps and
+        charges. The start weights are not free: the only freedom is the phase
+        :math:`\phi_\chi` of each sector.
+
+        Parameters
+        ----------
+        n_sites, n_blocks, blocking, max_blocking
+            As in :meth:`branching`.
+        d, D, transitions, R, V, final_phases, start
+            The automaton, as in :meth:`shared_basis_chain`. ``D`` counts the
+            vertices of one copy.
+        n_sectors : int
+            Number of charges :math:`m`, at least 1 (default 2).
+        charges : array of int, optional
+            :math:`q_a`, length ``d``; default :math:`a \bmod m`.
+        sector_phases : array or "random"
+            :math:`\phi_\chi`, length ``m``. Uniformly random by default.
+        edge_phases : array, "random" or None
+            :math:`\theta[\chi,v,a]`, shape ``(m, D, d)``, the same at every
+            site. ``"random"`` draws them per site (once if uniform). ``None``
+            sets them to zero; the guesses are then the same tensor and only
+            the ``m`` Fourier blocks remain.
+
+        Returns
+        -------
+        tensors : list of ndarray
+            Site tensors ``A[p_in, p_out, bond_L, bond_R]``, bond dimension
+            :math:`m^2 D` (:math:`mD` with ``edge_phases=None``).
+        l_vec, r_vec : ndarray
+            ``l_vec`` holds the weights :math:`c_{\chi,g}`, ``r_vec`` the final
+            phases, repeated in each copy.
+
+        Raises
+        ------
+        ValueError
+            As in :meth:`shared_basis_chain`, and for ``n_sectors < 1`` or
+            wrong shapes of ``charges``, ``sector_phases`` or ``edge_phases``.
+        RuntimeError
+            If ``verify`` is true and a numerical check fails.
+
+        Notes
+        -----
+        *Limits.* ``n_sectors=1`` is :meth:`shared_basis_chain` with a diagonal
+        dressing. ``edge_phases=None`` is :math:`W_N` times a Mode II convolution
+        with channels :math:`y^{\otimes N}`, :math:`y=\sum_a\omega^{q_a}
+        |r_a\rangle\langle r_a|`: the overlap with Mode II, and with
+        ``D=1`` and ``V`` the identity it is Mode II itself.
+
+        *Why it is more than Mode I.* A single start decides left to right, so
+        a phase that depends on the total charge has to be carried along. With
+        ``n_sectors=2``, ``D=1`` and :math:`\theta_0=0`,
+        :math:`\theta_1(a)=a\theta`, the unitary :math:`P+k^{\otimes N}Q` has
+        bond 4 here for every :math:`N`, while a single start needs at least
+        :math:`j+1` vertices at level :math:`j`: the operators left to act
+        after a prefix with :math:`n` ones differ, up to a phase, for different
+        :math:`n` (generic :math:`\theta`; ``docs/userguide.md`` section 4.3).
+
+        *When the copies are redundant.* If the vertex already determines the
+        charge, the end vertex verifies the guess and the Fourier blocks are not
+        needed. On a ring with :math:`D` even and ``n_sectors=2`` the bond
+        rank is :math:`2D`, not :math:`4D`: the representation is not minimal
+        and Assumption 1 fails for every blocking. Use an odd ring or maps
+        that do not track the charge. The operator-Schmidt rank grows by 2 per
+        site up to :math:`4D`, so ``blocking="auto"`` needs about :math:`2D`
+        sites on a ring (the plain counter needs about :math:`4D` for the
+        same bond).
+
+        *Rank.* All the copies read in the same basis, so the first-cut rank
+        stays at most :math:`d`. To exceed it compose with a chain that reads
+        in another basis, ``mixing.stack(w, chain)``; that product is unitary,
+        its blocks are products of chains and in general no longer Mode I.
+
+        Examples
+        --------
+        >>> tensors, l_vec, r_vec = MPUGenerator(seed=0).multi_start(n_sites=4, D=2)
+        >>> tensors[0].shape
+        (2, 2, 8, 8)
+        """
+        from .skeletons import MultiStartSkeleton
+
+        return self.sample(
+            MultiStartSkeleton(
+                d,
+                n_sectors,
+                D,
+                transitions,
+                R,
+                V,
+                final_phases,
+                start,
+                charges,
+                sector_phases,
+                edge_phases,
+            ),
+            n_sites,
+            n_blocks,
+            blocking,
+            max_blocking,
+        )
+
+    def cayley_chain(
+        self,
+        n_sites: int | None = None,
+        n_blocks: int | None = None,
+        group: str = "S3",
+        generators: list | None = None,
+        group_n: int | list[int] = 0,
+        R: np.ndarray | list | None = None,
+        V: list | None = None,
+        final_phases: np.ndarray | str | None = None,
+        blocking: int | str = 1,
+        max_blocking: int = 8,
+    ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
+        r"""Sample a shared-basis chain whose vertices are the elements of a group.
+
+        Not part of the thesis or paper. The letters are ``generators``
+        (physical dimension :math:`d` = their number) and reading letter
+        :math:`a` multiplies the vertex on the right, :math:`v\mapsto v\,g_a`
+        (the same at every site); the start vertex is the identity. This is
+        :meth:`shared_basis_chain` on the Cayley graph, so :math:`D=|G|` can
+        exceed :math:`d` (for :math:`S_3` with a transposition and a 3-cycle,
+        :math:`d=2`, :math:`D=6`). With this class the reading bases
+        :math:`R_k` and the vertex unitaries :math:`V_{k,v}` differ from site
+        to site.
+
+        Parameters
+        ----------
+        n_sites, n_blocks, blocking, max_blocking
+            As in :meth:`shared_basis_chain`.
+        group : {"S3", "Zn", "Zn_product"}
+            Group, as in :meth:`fusion`.
+        generators : list, optional
+            Group elements (permutation tuples for ``S3``, integers for
+            ``Zn``, tuples for ``Zn_product``); at least two. Default for
+            ``S3``: the first element of order 2 and the first of order 3;
+            required for the other groups.
+        group_n : int or list of int
+            Order of ``Zn`` or factor orders of ``Zn_product``.
+        R, V, final_phases
+            As in :meth:`shared_basis_chain` (``V[v]`` or ``V[k][v]`` with
+            :math:`|G|` unitaries per site).
+
+        Returns
+        -------
+        tensors, l_vec, r_vec
+            As in :meth:`shared_basis_chain`, with ``D = |G|``.
+
+        Raises
+        ------
+        ValueError
+            If ``generators`` is missing, has fewer than two elements or
+            contains a non-element, or for the errors of
+            :meth:`shared_basis_chain`.
+
+        Notes
+        -----
+        The generators need not generate the group; the unreachable vertices
+        are then unused. The group is the same at every site; only the
+        reading bases and vertex unitaries are site dependent.
+        """
+        transitions, start, d = _cayley_transitions(group, generators, group_n)
+        return self.shared_basis_chain(
+            n_sites=n_sites,
+            n_blocks=n_blocks,
+            d=d,
+            D=len(transitions[0]),
+            transitions=transitions,
+            R=R,
+            V=V,
+            final_phases=final_phases,
+            start=start,
+            blocking=blocking,
+            max_blocking=max_blocking,
+        )
 
 
 def generate_random_mpu(

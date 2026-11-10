@@ -4,7 +4,37 @@
 
 All default outputs are unchanged (bit for bit).
 
+### Documentation
+- `docs/userguide.md` section 4 "Choosing a generator": a table by goal, what
+  keeps or destroys long-range operator spreading (measured), and what Mode I
+  cannot represent (first-cut operator-Schmidt rank criterion), and how to
+  build chains with several start vertices on the same sites (section 4.3),
+  including the minimal bond of `multi_start`; section 4.4 "Known circuit
+  structure": the explicit circuit of every family (none known for Lee-Yang).
+  Corrected: `nested_flag` as a whole is a single-start Mode I chain (only its
+  blocks are not).
+
+### Changed
+- Internal: every mode is now a `Skeleton` subclass (`mpu_generators.skeletons`)
+  driven by one pipeline, `MPUGenerator.sample(skeleton, ...)`; the generator
+  methods are thin wrappers. `FusionSkeleton` is kept as an alias of
+  `BondResolvedSkeleton`. All outputs are unchanged bit for bit (golden
+  fingerprints in `tests/test_golden_outputs.py`).
+
 ### Added
+- `MPUGenerator.multi_start` (also on `UniformMPUGenerator`) and
+  `skeletons.MultiStartSkeleton`: Mode I with several start vertices, copies of
+  one shared-basis automaton, one per guess of a total charge. Four new entries
+  of `FAMILIES`: `multi_start_parity`, `multi_start_ring`, `multi_start_general`,
+  `multi_start_stacked` (not in the thesis or paper).
+- `MPUGenerator.shared_basis_chain` and `cayley_chain` (also on
+  `UniformMPUGenerator`, where one site is reused): site-dependent
+  shared-basis counter automata. The reading basis, the vertex unitaries, the
+  maps and the bond dimensions may change from site to site; the chain is
+  exactly unitary for all of them (the bases of different sites are not
+  coupled). `blocking="auto"` is supported. Four new entries of `FAMILIES`:
+  `shared_basis_ring`, `shared_basis_general`, `cayley_S3`,
+  `cayley_S3_general` (not in the thesis or paper).
 - `UniformMPUGenerator.shared_basis_automaton` and `cayley_automaton`: Mode I
   counter automata in which every vertex reads the site in one common basis
   (lazy rings, Cayley graphs such as $S_3$ with two letters, final phases).

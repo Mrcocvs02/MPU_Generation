@@ -452,11 +452,15 @@ def test_clock_is_degree_one_RR_and_unitary():
 
 @pytest.mark.parametrize("group,n", [("Zn", 4), ("Sn", 3)])
 def test_group_automaton_satisfies_RR_exactly(group, n):
-    """The group automaton satisfies (RR) with zero residual (permutation algebra)."""
+    """The group automaton satisfies (RR) with zero residual (permutation algebra).
+
+    The residual is measured by a floating-point sweep (divisions by ``d``), so
+    "zero" means a few ulp, not the bit pattern of one summation order.
+    """
     gen = UniformMPUGenerator(seed=13)
     A, l, r = gen.group_automaton(group=group, n=n, seed=1)
     _, _, residual = compute_chain_boundary_operators([A] * 3, l, r)
-    assert abs(1.0 - complex(residual)) == 0.0
+    assert abs(1.0 - complex(residual)) <= 4 * np.finfo(float).eps
     _assert_unitary([A] * 3, l, r)
 
 

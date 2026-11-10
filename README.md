@@ -14,6 +14,8 @@ length — nothing here relies on statistical typicality, large-$N$
 concentration, or rejection sampling. Mode II-B (Lee–Yang) is validated
 numerically only (see [Background](#background)).
 
+**Which generator for what?** See [Choosing a generator](docs/userguide.md#4-choosing-a-generator): a table by goal, what keeps or destroys long-range operator spreading, and what Mode I cannot represent.
+
 **Documentation:** [user guide](docs/userguide.md) ·
 [tutorial notebooks](https://github.com/Mrcocvs02/TreeMPU/tree/main/notebooks) (02, 03, 06) ·
 [theory → code map](https://github.com/Mrcocvs02/TreeMPU/blob/main/docs/theory_code_map.md)
@@ -70,14 +72,43 @@ Two classes, sharing one construction:
   two-vertex path algebra grafted inside the channels of the Mode II `cyclic`
   skeleton (a group convolution when the channel count divides $d$) — a
   product of two independently certified unitaries.
-- **Translationally-invariant-only mechanisms** (`UniformMPUGenerator`):
-  `clock`, `group_automaton`, `shared_basis_automaton`, `cayley_automaton`,
+- **Shared-basis counter automata — `shared_basis_chain`, `cayley_chain`**
+  (**new, beyond the thesis**): a family of Mode I tensors in which all the
+  vertices of a site read the input in *one* orthonormal basis (the basis may
+  differ from site to site), so the chain is a deterministic counter on the
+  input letters: $U_N|r_{x_1}\cdots r_{x_N}\rangle=e^{i\varphi}\bigotimes_k
+  V_{k,v_{k-1}}r_{k,x_k}$ with $v_k=\sigma_{k,x_k}(v_{k-1})$. Exactly unitary for
+  every $N$, every basis, vertex unitary, phase, per-site bond dimension and
+  map (a one-paragraph single-path proof, in the docstring and re-checked by
+  (RR) on every tensor). They are notable because the operator spreading is
+  one-directional and, for permutation maps, **does not decay with the
+  distance** (a Haar-basis `branching` chain with the same digraph decays);
+  they reach bond dimension $D>d$ (rings, Cayley graphs such as $S_3$ with
+  $d=2$, $D=6$), contain `group_automaton` and Mode II `cyclic` as special
+  cases, and `TreeMPU` synthesizes them exactly. `MPUGenerator` draws every
+  site independently; `UniformMPUGenerator` reuses one site. Four named
+  families: `shared_basis_ring`, `shared_basis_general`, `cayley_S3`,
+  `cayley_S3_general`. See
+  [Shared-basis automata](#shared-basis-automata-beyond-the-thesis).
+- **Multi-start Mode I — `multi_start`** (**new, beyond the thesis**): Mode I
+  with several start vertices. The chain is $m^2$ copies of one shared-basis
+  automaton, one per guess of the total charge of the input (and Fourier index);
+  they differ only by phases on the edges, every block is a Mode I chain, and
+  the start weights keep the right guess. Unitary for every $N$ and all the data
+  (one-line proof, in the docstring). It contains the counter ($m=1$) and overlaps
+  Mode II (no edge phases), and reaches operators that no single start can
+  represent at fixed bond: the parity-controlled phase has bond 4, a single start
+  needs $j+1$ vertices at level $j$. Four named families: `multi_start_parity`,
+  `multi_start_ring`, `multi_start_general`, `multi_start_stacked`. See section 4.3 of
+  the [user guide](docs/userguide.md).
+- **Single-tensor mechanisms** (`UniformMPUGenerator` only): `clock`,
+  `group_automaton`, `shared_basis_automaton`, `cayley_automaton`,
   `self_direction`, `resonant`, `multi_symbol`, `invariant_subspace`,
-  `degenerate_rows` — single-tensor constructions that are not part of the
-  thesis or paper and are validated by the unit tests only: `clock`,
-  `group_automaton`, `shared_basis_automaton`, `cayley_automaton` and
-  `degenerate_rows` are special cases of Mode I; `self_direction`,
-  `resonant` and `multi_symbol` give on-site product unitaries.
+  `degenerate_rows`. Not part of the thesis or paper and validated by the
+  unit tests: `clock`, `group_automaton`, `shared_basis_automaton`,
+  `cayley_automaton` and `degenerate_rows` are special cases of Mode I;
+  `self_direction`, `resonant` and `multi_symbol` give on-site product
+  unitaries.
 - **Mixing combinators** (`mixing.py`): `stack` (operator composition),
   `nest` (rank-$k$ invariant subspace), `capped_sum` (a capped sum of two
   unitary chains, unitary by (RR) of its readout row, thesis
@@ -201,7 +232,7 @@ from mpu_generators import (
     UniformMPUGenerator,
     generate_random_mpu,  # generators
     build_family,
-    FAMILIES,  # named thesis/paper families
+    FAMILIES,  # named families (thesis, paper, shared-basis automata)
     skeletons,
     mixing,  # Mode II-B skeletons, combinators
 )
@@ -227,6 +258,31 @@ left/right boundary vectors closing the chain.
 - Dense matrices from `TreeMPU.checks.dense_unitary_from_tensors` are
   `U[out, in]` with site 0 the least significant digit (Qiskit order).
 
+### One pipeline, one skeleton per mode
+
+Every construction is a *skeleton* (`mpu_generators.skeletons`): the data that
+define it, with three hooks — `prepare` (chain-level draws: a digraph, a
+boundary vector), `site` (one tensor) and `close` (boundary vectors, a readout
+cascade). The generator owns the rest (`MPUGenerator.sample(skeleton, ...)`:
+size checks, per-site or uniform sampling, blocking, verification), so all
+modes run through the same code and the methods below are thin wrappers:
+
+| method | skeleton |
+|---|---|
+| `branching` | `RowResolutionSkeleton` |
+| `fusion(skeleton="cyclic" / "nested_flag" / "matrix_units" / "group")` | `CyclicSkeleton`, `NestedFlagSkeleton`, `MatrixUnitSkeleton`, `GroupSkeleton` (base class `FusionClosureSkeleton`) |
+| `fusion_bond_resolved` | `BondResolvedSkeleton` (alias `FusionSkeleton`; e.g. `lee_yang_skeleton()`) |
+| `grafted` | `GraftedSkeleton` |
+| `shared_basis_chain`, `cayley_chain` | `SharedBasisSkeleton` |
+| `multi_start` | `MultiStartSkeleton` |
+
+A new construction is one more subclass of `Skeleton` (or of
+`FusionClosureSkeleton` for a new fusion rule) passed to `sample`; nothing in
+the generator changes. The outputs of all existing methods are unchanged bit
+for bit (`tests/test_golden_outputs.py`). One legacy difference is kept for
+reproducibility of the thesis instances: Mode II-B draws its sites in physical
+order (`reverse_sites = False`).
+
 ### `MPUGenerator(seed=0, verify=True, coherent_in_n=True)`
 
 With `coherent_in_n=True` (default) the generator is seeded with `seed`
@@ -247,6 +303,9 @@ factor satisfying Assumption 1, capped by `max_blocking`).
 | `fusion(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8, skeleton="cyclic", group="Zn", group_n=3)` | II | `skeleton in {"cyclic","nested_flag","matrix_units","group"}`; `nested_flag` needs `bond_dim <= d`; `cyclic` accepts any `bond_dim` (a group convolution only when `bond_dim` divides `d`; for `bond_dim > d` the single-site channels are linearly dependent and Assumption 1 first holds on blocks of `ceil((bond_dim-1)/(d-1))` sites, so use `blocking="auto"`); `matrix_units` needs `bond_dim = 1 + m**2` for integer `m <= d` (`bond_dim` = 2, 5, 10, 17, 26, ...); `group` needs `d = bond_dim = |G|` with `group in {"Zn","Zn_product","S3"}` (for `Zn`, `|G| = group_n`) |
 | `fusion_bond_resolved(skeleton, n_sites=None, n_blocks=None, blocking=1, max_blocking=8)` | II-B | `skeleton`: a pre-built `FusionSkeleton` (e.g. from `mpu_generators.skeletons.lee_yang_skeleton()`) |
 | `grafted(d=2, bond_dim=2, n_sites=None, n_blocks=None, blocking=1, max_blocking=8)` | I + II | requires even `bond_dim` (`= 2 * n_channels`) with `n_channels <= d`; the channels are the `cyclic` skeleton, a group convolution only when `n_channels` divides `d` |
+| `multi_start(n_sites=None, n_blocks=None, d=2, n_sectors=2, D=4, transitions=None, R=None, V=None, final_phases=None, start=0, charges=None, sector_phases="random", edge_phases="random", blocking=1, max_blocking=8)` | I, several starts | automaton data as in `shared_basis_chain`; bond $m^2D$ with $m$ = `n_sectors`, $mD$ with `edge_phases=None`; use an odd ring or maps that do not track the charge, otherwise Assumption 1 fails |
+| `shared_basis_chain(n_sites=None, n_blocks=None, d=2, D=4, transitions=None, R=None, V=None, final_phases=None, start=0, blocking=1, max_blocking=8)` | I | one reading basis per site, `D` an int or a list of `n+1` bond dimensions (site-dependent class only); `transitions`: `"permutation"` (default for constant `D`), `"ring"`, `"random"` or explicit `[a][v]` / `[k][a][v]`; `R`, `V`: one for all sites or one per site; `final_phases` an array or `"random"` |
+| `cayley_chain(n_sites=None, n_blocks=None, group="S3", generators=None, group_n=0, R=None, V=None, final_phases=None, blocking=1, max_blocking=8)` | I | vertices are the group elements, letters the `generators` (default for `S3`: an involution and a 3-cycle, so `d=2`, `D=6`); same group at every site, site-dependent `R` and `V` |
 
 `blocking="auto"` retries increasing block sizes until the boundary
 operators have full rank at every cut (minimal bond dimension, as checked
@@ -286,14 +345,18 @@ reused bulk tensor `(A, l_vec, r_vec)` (use `[A] * N`):
 
 Two variants are not implemented: dressing a unitary on ancilla ⊗ physical
 does not produce (RR) (the resolutions of the identity it gives sum over the
-wrong index), and a triangular (Jordan-type) extension leaves a boundary
-mismatch with the bulk.
+wrong index), and a generic triangular (Jordan-type) extension leaves a
+boundary mismatch with the bulk. The anticommuting triangular tensor does work,
+and is a Mode I chain in a site-dependent gauge: see `docs/userguide.md`
+section 4.3, which also covers chains with several start vertices.
 
-#### Shared-basis automata compared with the Haar-basis Mode I sampler
+#### Shared-basis automata (beyond the thesis)
 
-`branching` draws an independent Haar basis at every vertex. In
-`shared_basis_automaton` all vertices read in one basis, so the input-side
-projectors take only $d$ distinct values instead of one per edge. The class
+"Shared" refers to the vertices: at a given site all vertices read the input
+in the same basis, so the input-side projectors take only $d$ distinct values
+instead of one per edge. The basis does not have to be the same at different
+sites (see the next subsection). `branching`, in contrast, draws an
+independent Haar basis at every vertex. The class
 is exactly unitary either way; what changes is how an operator spreads. The
 table gives the fraction of $U_N P_i U_N^\dagger$ that is *not* supported in a
 window of radius $R$ around the middle site ($N=60$, maximum over the three
@@ -321,6 +384,84 @@ the circuits of [`TreeMPU`](https://github.com/Mrcocvs02/TreeMPU) with the
 closed-form Mode I boundary have identical $q=\chi$, $\ell$, qubit count,
 depth and gate count (8 sites, $D=4$: $q=4$, $\ell=3$, 29 qubits), because
 that cost depends only on $\chi$ and $d$.
+
+#### Site-dependent chains: what makes the tail non-decaying
+
+The unitarity proof only uses the first site at which two input strings
+differ: the prefix is shared, so the vertex is shared, and the two inputs are
+read in orthogonal vectors of one site. The reading basis therefore only has
+to be common to the vertices *of that site*; it can change from site to site,
+as can the vertex unitaries, the maps and the bond dimensions
+(`MPUGenerator.shared_basis_chain`). The left boundary must be a single basis
+vector (several start vertices could make paths collide), and the right
+boundary must be unimodular.
+
+Fraction of $U_N P_0 U_N^\dagger$ outside a window of radius $R$ around site 0
+($N=8$, $d=2$, $D=4$, bases and unitaries independent at every site, maximum
+over $X$ and $Z$, six seeds, dense computation; mean and range):
+
+| maps | $R=1$ | $R=2$ | $R=3$ |
+|---|---|---|---|
+| ring | 0.83 (0.63-0.99) | 0.83 (0.63-0.99) | 0.83 (0.63-0.99) |
+| random permutations | 0.81 (0.55-0.96) | 0.81 (0.55-0.95) | 0.81 (0.55-0.95) |
+| random maps | 0.41 (0.00-0.90) | 0.32 (0.00-0.71) | 0.25 (0.00-0.59) |
+
+With permutation maps the weight does not decrease with the radius (all of
+it lies beyond $R=3$; per seed the weight changes by at most 0.005 between $R=1$ and $R=3$) even though the bases differ from site to site; with
+coalescing maps it decreases. The reason is not that the basis is the same
+at every site (the ring gives 0.88 with one basis, translation invariant, and
+0.83 with independent bases at every site): the vertex $v_{k-1}$ is a deterministic function of the letters on
+the left, the output at site $k$ depends on it, and with permutation maps no
+information about the letters is lost, so a changed letter changes every
+later output. In `branching` the vertices read in different bases, the path
+is a superposition rather than a function of fixed letters, and the tail
+decays (numerical; this explanation is an interpretation, not a theorem).
+
+*Interpolating between the two cases.* Let the vertices of the ring read in
+$g$ groups, each group with its own Haar basis ($g=1$ is the shared-basis
+ring, $g=D$ one basis per vertex, as in `branching` with the same digraph; all
+are Mode I tensors, so exactly unitary). Weight of $U_8X_0U_8^\dagger$ outside
+a window of radius $R$ ($d=2$, $D=4$, mean of 8 seeds):
+
+| groups | $R=1$ | $R=2$ | $R=3$ |
+|---|---|---|---|
+| $g=1$ | 0.98 | 0.98 | 0.98 |
+| $g=2$ | 0.68 | 0.60 | 0.55 |
+| $g=4$ (one basis per vertex) | 0.70 | 0.59 | 0.51 |
+| library `branching` ring | 0.58 | 0.50 | 0.44 |
+
+Changing the *number* of Haar bases is not a knob: a second Haar basis already
+gives the decaying behaviour of the Haar-basis ring (the same at $D=6$ for
+$g=2,3,6$, without a monotone trend in $g$). Changing the *angle* is. Let the
+vertices read in $R_v=R_0\,e^{i\theta\,\vec n_v\cdot\vec\sigma}$, with $\vec n_v$ a
+random axis per vertex ($\theta=0$ is the shared basis). Drop of the weight
+between $R=1$ and $R=3$ ($d=2$, ring, $N=8$, mean of 8 seeds; a flat tail is
+a drop of about 0):
+
+| $\theta$ | 0 | 0.1 | 0.2 | 0.4 | 0.8 | $\pi/2$ |
+|---|---|---|---|---|---|---|
+| $D=4$ | 0.01 | 0.02 | 0.05 | 0.12 | 0.16 | 0.16 |
+| $D=6$ | 0.01 | 0.02 | 0.04 | 0.11 | 0.17 | 0.11 |
+
+The tail stays flat for small angles and decays progressively, saturating near
+the value of the Haar-basis ring (0.16 at $D=4$) for $\theta\gtrsim0.8$. Other
+targeted choices at $D=4$ (drop between $R=1$ and $R=3$): two mutually unbiased
+bases alternating around the ring, 0.16 (decays like Haar); the *same* basis
+with the letter labels swapped on odd vertices, 0.00 (stays flat: it is still a
+shared-basis automaton, with vertex-dependent maps); a single vertex in another
+Haar basis, 0.09 at $D=4$ and 0.04 at $D=6$ (partial). So the decay appears
+when a path passes through vertices that read in a different set of
+projectors, and its strength grows with how different, and how many, those
+vertices are. This is a finite-size observation (window $R\le3$, $N=8$, 8
+seeds; the saturation value fluctuates by a few hundredths), not a theorem. The zeros are draws in which
+$\sigma_{0,0}$ and $\sigma_{0,1}$ send the start vertex to the same vertex,
+so that the letter at site 0 never reaches the later vertices (tested: the
+weight is exactly zero then, and above 0.5 otherwise in the test). These are finite-size
+numerical observations, not theorems. `TreeMPU.GeneralMPU` synthesizes a
+site-dependent ring exactly with its canonical boundaries (seed 0, $d=2$,
+$D=3$, two blocks of two sites: $q=3.9$, error $3\times10^{-14}$); random permutations or maps may fail Assumption 1 for
+every block size, because the start vertex then reaches fewer than $D$
+vertices.
 
 `group_automaton` is the special case with reading basis $1$, all group
 elements as letters and $V_g$ the left multiplication (identical tensors,
@@ -405,6 +546,15 @@ additionally builds fully dense $d^N \times d^N$ matrices for direct
 $U^\dagger U = \mathbb{1}$ checks at small $N$, as an independent
 cross-check of the whole pipeline, not just of the certificate functions in
 isolation.
+
+**Cost.** The checks are for implementation errors and for user-supplied
+input (hand-picked digraphs, bases, maps, skeleton tensors), not for the
+mathematics, which is analytic. Measured CPU time (one thread) of
+`verify=True` beyond the generation itself: about 60 ms at tiny $N$ (the dense
+check, $d^N\le2^{10}$), 0.03 s at $N=64$, $D=4$; 0.6 s at $N=4096$, $D=4$
+(generation 2.2 s); about 1 s at $D=32$–$64$ ($N=64$–$128$, generation 0.5 s). For
+large sweeps pass `verify=False` (also in `generate_random_mpu`); the output is
+identical, only the checks are skipped.
 
 ## Example: Mode II-B / Lee-Yang
 
